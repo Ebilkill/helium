@@ -65,6 +65,7 @@ analyse (Forall _ _ e) = analyse e
 analyse (ApType e1 _) = analyse e1
 analyse (Con _) = ANil
 analyse (Lit _) = ANil
+analyse (Prim _) = ANil -- TODO: See if this needs to have a different analysis
 
 data Decision
   = Local { decisionName :: !Id, decisionValue :: !InlineState } -- Analysed only locally, not yet final
@@ -155,6 +156,7 @@ inlineInExpr :: Env -> Expr -> Expr
 inlineInExpr env e@(Lit _) = e
 inlineInExpr env e@(Var name) = fromMaybe e $ lookupMap name $ values env
 inlineInExpr env e@(Con _) = e
+inlineInExpr env e@(Prim _) = e
 inlineInExpr env (Lam strict x e) = Lam strict x $ inlineInExpr env e
 inlineInExpr env (Ap e1 e2) = Ap (inlineInExpr env e1) (inlineInExpr env e2)
 inlineInExpr env (Forall x k e) = Forall x k $ inlineInExpr env e

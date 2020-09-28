@@ -74,6 +74,7 @@ analyseExpression env supply (Match var alts) = Analysis (foldr1 intersectionSet
   where
     (stricts, alts') = unzip $ map (\(Analysis s a) -> (s, a)) $ mapWithSupply (analyseAlt env) supply alts
 analyseExpression _ _ expr@(Lit _) = Analysis emptySet expr
+analyseExpression _ _ expr@(Prim _) = Analysis emptySet expr -- TODO: See if this needs a different analysis
 analyseExpression env supply expr@(Lam _ _ _) = Analysis emptySet expr'
   where
     -- Do not propagate the strictness information from the function, as it may not be invoked

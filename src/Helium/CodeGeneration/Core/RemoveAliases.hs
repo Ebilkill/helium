@@ -83,6 +83,7 @@ renameExpr _ (Con con) = Con con
 renameExpr _ (Lit lit) = Lit lit
 renameExpr env (Forall x k expr) = Forall x k $ renameExpr env expr
 renameExpr env (ApType expr t) = ApType (renameExpr env expr) t
+renameExpr env (Prim p) = Prim p -- TODO: Check if this needs an inner rename!
 
 renameAlt :: Env -> Id -> Alt -> [Alt]
 renameAlt env scrutinee (Alt pat expr) = case (pat, expr') of

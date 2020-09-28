@@ -135,6 +135,7 @@ renameInSimpleExpr env (Ap e1 e2) = Ap (renameInSimpleExpr env e1) (renameInSimp
 renameInSimpleExpr env (ApType e t) = ApType (renameInSimpleExpr env e) t
 renameInSimpleExpr env e@(Con _) = e
 renameInSimpleExpr env e@(Lit _) = e
+renameInSimpleExpr env e@(Prim _) = e -- TODO: Check if this needs an inner rename
 
 rename :: Env -> Id -> Id
 rename env@(Env _ mapping) name = case lookupMap name mapping of
