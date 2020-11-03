@@ -1,4 +1,9 @@
-module Helium.CodeGeneration.LLVM.Builtins (builtinDefinitions, eval, alloc, unpackString) where
+module Helium.CodeGeneration.LLVM.Builtins
+  ( builtinDefinitions
+  , eval, alloc, unpackString
+  , newCursor, freeCursor, writeCursor, finishCursor, memdumpCursor
+  )
+where
 
 import Helium.CodeGeneration.Iridium.Data as Iridium
 import Helium.CodeGeneration.LLVM.Utils
@@ -16,7 +21,7 @@ data Builtin = Builtin Id [Type] Type
 builtin :: String -> [Type] -> Type -> Builtin
 builtin = Builtin . idFromString
 
-eval', alloc', memcpy', unpackString' :: Builtin
+eval', alloc', memcpy', unpackString', newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor' :: Builtin
 eval' = builtin "_$helium_runtime_eval" [voidPointer, IntegerType 64] voidPointer
 -- Alignment, size (number of bytes)
 alloc' = builtin "helium_global_alloc" [IntegerType 32] voidPointer
@@ -25,19 +30,40 @@ memcpy' = builtin "memcpy" [voidPointer, voidPointer, IntegerType 32] voidPointe
 -- TODO: use target pointer size
 unpackString' = builtin "_$helium_runtime_unpack_string" [IntegerType 64, pointer $ IntegerType 8] voidPointer
 
+-- All voidPointers in the Cursor functions are actually cursor*, EXCEPT the
+-- voidPointer in the return type of the functions other than newCursor' (where
+-- they're actually 'void'), and the last argument to write_cursor (where it's
+-- actually 'void*').
+newCursor'      = builtin "helium_new_cursor"     [] voidPointer
+freeCursor'     = builtin "helium_free_cursor"    [voidPointer] voidPointer
+writeCursor'    = builtin "helium_write_cursor"   [voidPointer, IntegerType 64, voidPointer] voidPointer
+finishCursor'   = builtin "helium_finish_cursor"  [voidPointer, voidPointer] voidPointer
+memdumpCursor'  = builtin "helium_memdump_cursor" [voidPointer] voidPointer
+
 builtins :: Iridium.Module -> [Builtin]
 builtins iridium = filter (\(Builtin name _ _) -> not $ Iridium.declaresFunction iridium name) allBuiltins
   
 allBuiltins :: [Builtin]
-allBuiltins = [eval', alloc', memcpy', unpackString']
+allBuiltins =
+  [ -- Cursor builtins:
+    newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor'
+    -- Other builtins:
+  , eval', alloc', memcpy', unpackString'
+  ]
 
 builtinDefinitions :: Iridium.Module -> [Definition]
 builtinDefinitions iridium = map definition $ builtins iridium
 
-eval, alloc, unpackString :: Operand
+eval, alloc, unpackString, newCursor, freeCursor, writeCursor, finishCursor, memdumpCursor :: Operand
 eval = operand eval'
 alloc = operand alloc'
 unpackString = operand unpackString'
+
+newCursor     = operand newCursor'
+freeCursor    = operand freeCursor'
+writeCursor   = operand writeCursor'
+finishCursor  = operand finishCursor'
+memdumpCursor = operand memdumpCursor'
 
 operand :: Builtin -> Operand
 operand (Builtin name args ret) = ConstantOperand $ GlobalReference (pointer t) $ toName name

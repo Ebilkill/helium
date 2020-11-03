@@ -26,6 +26,7 @@ import qualified Helium.CodeGeneration.LLVM.Builtins as Builtins
 import Lvm.Common.Id(Id, NameSupply, splitNameSupply, splitNameSupplies, mapWithSupply, freshId, idFromString)
 import Lvm.Common.IdMap(findMap)
 import qualified Lvm.Core.Type as Core
+import Lvm.Core.Expr (PrimFun(..), typeOfPrimFun)
 
 import qualified Helium.CodeGeneration.Iridium.Data as Iridium
 import qualified Helium.CodeGeneration.Iridium.Type as Iridium
@@ -251,12 +252,119 @@ compileExpression env supply expr@(Iridium.Phi branches) name = [toName name := 
     t = Iridium.typeOfExpr (envTypeEnv env) expr
     compileBranch :: Iridium.PhiBranch -> (Operand, Name)
     compileBranch (Iridium.PhiBranch blockId var) = (toOperand env var, toName blockId)
-compileExpression env supply (Iridium.PrimitiveExpr primName args) name = compile (envTarget env) supply [toOperand env arg | Right arg <- args] $ toName name
-  where
-    (Iridium.Primitive _ compile) = Iridium.findPrimitive primName
 compileExpression env supply (Iridium.Undefined ty) name = [toName name := Select (ConstantOperand $ Int 1 1) (ConstantOperand $ Undef t) (ConstantOperand $ Undef t) []]
   where
     t = compileType env ty
+
+-- Cursor expressions
+compileExpression env supply (Iridium.PrimitiveExpr prim args) name
+  = error "I don't like primitive expressions :("
+
+compileExpression env supply expr@(Iridium.CallPrimFun PrimNewCursor args) name =
+  [ -- namePtr := Alloca vectorType Nothing 0 []
+  -- , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
+  -- Cast [n x i32]* to i32*
+  -- , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+    toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.newCursor
+    , arguments = []
+    , functionAttributes = []
+    , metadata = []
+    }
+  ]
+  where
+    (namePtr, supply') = freshName supply
+    (nameArray, _) = freshName supply'
+
+compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor con) [Right cursor]) name =
+  [ namePtr := Alloca vectorType Nothing 0 []
+  , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
+  -- Cast [n x i32]* to i32*
+  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  , toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.writeCursor
+    , arguments =
+      [ (toOperand env cursor, [])
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 1, [])
+      , (LocalReference voidPointer nameArray, [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  ]
+  where
+    (namePtr, supply') = freshName supply
+    (nameArray, _) = freshName supply'
+    vectorType = IntegerType 8
+    vector = Int 8 $ fromIntegral 0
+
+compileExpression env supply (Iridium.CallPrimFun PrimWrite [Right cursor, Right val]) name =
+  [ namePtr := Alloca vectorType Nothing 0 []
+  , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
+  -- Cast [n x i32]* to i32*
+  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  , toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.writeCursor
+    , arguments =
+      [ (toOperand env cursor, [])
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 4, [])
+      , (LocalReference voidPointer nameArray, [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  ]
+  where
+    (namePtr, supply') = freshName supply
+    (nameArray, _) = freshName supply'
+    vectorType = IntegerType 64
+
+-- TODO make sure that an end-pointer exists?
+compileExpression env supply (Iridium.CallPrimFun PrimToEnd [Right cursor]) name =
+  [ namePtr := Alloca vectorType Nothing 0 []
+  ]
+  ++ cast supply env (toOperand env cursor) (toName name) t t
+  where
+    t = typeOfPrimFun PrimToEnd
+    (namePtr, supply') = freshName supply
+    (nameArray, _) = freshName supply'
+    vectorType = IntegerType 32
+
+compileExpression env supply (Iridium.CallPrimFun PrimFinish [Right cursorStart, Right cursorEnd]) name =
+  [ namePtr := Alloca vectorType Nothing 0 []
+  , toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.finishCursor
+    , arguments =
+      [ (toOperand env cursorStart, [])
+      , (toOperand env cursorEnd,   [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  ]
+  where
+    (namePtr, supply') = freshName supply
+    (nameArray, _) = freshName supply'
+    vectorType = IntegerType 64
+
+compileExpression env supply e name = error $ "Cannot compile expression: " ++ show e ++ " with name " ++ show name
+{-
+compileExpression env supply (Iridium.PrimitiveExpr primName args) name = compile (envTarget env) supply [toOperand env arg | Right arg <- args] $ toName name
+  where
+    (Iridium.Primitive _ compile) = Iridium.findPrimitive primName
+-}
 
 compileEval :: Env -> NameSupply -> Operand -> Core.Type -> Name -> [Named Instruction]
 compileEval env supply operand tp name
