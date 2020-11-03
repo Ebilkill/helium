@@ -188,40 +188,6 @@ typeOfLiteral (LitInt _ tp) = TCon $ TConDataType $ idFromString $ show tp
 typeOfLiteral (LitDouble _) = TCon $ TConDataType $ idFromString "Double"
 typeOfLiteral (LitBytes _) = TCon $ TConDataType $ idFromString "String"
 
--- TODO: REMOVE THESE LATER, just here for testing
-packedIntType, intType :: Type
-packedIntType = TCon $ typeConFromString "TreeTest.PACKED_Int"
-intType       = TCon $ typeConFromString "Int"
-
-typeOfPrimFun :: PrimFun -> Type
-typeOfPrimFun PrimFinish =
-  typeFunction
-    [ TCon (TConCursorNeeds [] packedIntType)
-    , TCon (TConCursorNeeds [packedIntType] packedIntType)
-    ]
-    packedIntType -- TODO: Return Has cursor
-typeOfPrimFun PrimRead   = undefined
-typeOfPrimFun PrimWrite  =
-  typeFunction
-    [ TCon (TConCursorNeeds [intType] packedIntType)
-    , intType
-    ]
-    (TCon (TConCursorNeeds [] packedIntType))
-typeOfPrimFun (PrimWriteCtor c) = TAp (TAp (TCon TConFun) (TCon $ TConCursorNeeds [packedIntType] packedIntType)) (TCon $ TConCursorNeeds [intType] packedIntType)
-typeOfPrimFun PrimToEnd =
-  typeFunction
-    [ TCon $ TConCursorNeeds [] packedIntType
-    ]
-    (TCon (TConCursorEnd 0)) -- TODO: Implement addresses for cursors
---typeOfPrimFun PrimFinish =
---  TForall (Quantor 0 (Just "a")) KStar $
---  TAp (TAp (TCon TConFun) (TCon (TConCursorNeeds [] (TVar 0)))) (TVar 0)
---typeOfPrimFun PrimWrite  =
---  TForall (Quantor 0 (Just "a")) KStar $
---  TForall (Quantor 1 (Just "b")) KStar $
---  typeApply (typeApply (TCon TConFun) (TCon (TConCursorNeeds [TVar 0] (TVar 1)))) (TVar 0)
-  -- Does not recognize the TVars inside the TConCursor...
-
 data FunctionType = FunctionType { functionArguments :: ![Either Quantor Type], functionReturnType :: !Type }
   deriving (Eq, Ord)
 

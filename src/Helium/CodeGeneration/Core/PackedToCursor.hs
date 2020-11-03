@@ -1,3 +1,4 @@
+{-# LANGUAGE TupleSections #-}
 {-| Module      :  Lift
     License     :  GPL
 
@@ -18,77 +19,195 @@ import Helium.CodeGeneration.Core.TypeEnvironment
 import Helium.CodeGeneration.Core.ReduceThunks (isCheap)
 
 import Data.Bifunctor
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, intercalate)
 import Debug.Trace (trace)
 
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
-corePackedToCursor :: NameSupply -> CoreModule -> CoreModule
-corePackedToCursor supply mod@(Module name major minor imports decls) = Module name major minor imports ds''
+type FunctionTypeChanges = [FunctionTypeChange] -- A list of function IDs with their new types
+type FunctionTypeChange  = (Id, Type)
+
+showFunctionTypeChanges :: FunctionTypeChanges -> String
+showFunctionTypeChanges ftcs = "[" ++ intercalate ", " (sftc' <$> ftcs) ++ "]"
   where
-    env             = typeEnvForModule mod
-    -- TODO: make sure this gets the modified supply, or verify that it doesn't need the modified supply
-    (ds', supply')  = (packedToCursor env supply decls, supply)
-    env'            = typeEnvForModule $ Module name major minor imports ds'
-    ds''            = fixCursorCalls env' supply' ds'
+    sftc' :: FunctionTypeChange -> String
+    sftc' (i, t) = "(" ++ show i ++ ", " ++ show (pretty t) ++ ")"
 
-fixCursorCalls :: TypeEnvironment -> NameSupply -> [CoreDecl] -> [CoreDecl]
-fixCursorCalls env supply ds = ds -- TODO: Do the thing
+data TransformerHelper a
+  = TH (   NameSupply
+        -> FunctionTypeChanges
+        -> (a, NameSupply, FunctionTypeChanges))
 
-packedToCursor :: TypeEnvironment -> NameSupply -> [CoreDecl] -> [CoreDecl]
-packedToCursor env supply = map (useCursorsInDecl env supply)
+transformerResult :: NameSupply -> TransformerHelper a -> a
+transformerResult supply (TH x) = case x supply [] of
+  (y, _, _) -> y
 
-useCursorsInDecl :: TypeEnvironment -> NameSupply -> CoreDecl -> CoreDecl
-useCursorsInDecl env supply d@(DeclValue name access mod ty expr customs)
-  = DeclValue name access mod newType newExpr customs
-    where
-      cursifiedExpr = cursorfyExpr env supply ty expr
-      (newExpr, newType) =
-        (cursifiedExpr, typeOfCoreExpression env cursifiedExpr)
-useCursorsInDecl _ _ d = d
+instance Functor TransformerHelper where
+  f `fmap` TH g = TH $ \supp ftcs ->
+    let (x, supp', ftcs') = g supp ftcs
+    in  (f x, supp', ftcs')
 
-cursorfyExpr :: TypeEnvironment -> NameSupply -> Type -> Expr -> Expr
-cursorfyExpr env supply t e = cursorfy' t e
+instance Applicative TransformerHelper where
+  a <*> b = do
+    a' <- a
+    b' <- b
+    return $ a' b'
+  pure = return
+
+instance Monad TransformerHelper where
+  (TH x) >>= b = TH $ \supp ftcs ->
+    let (a, supp', ftcs') = x supp ftcs
+        (TH b') = b a
+    in  b' supp' ftcs'
+  return a = TH $ \supp ftcs -> (a, supp, ftcs)
+
+thId :: TransformerHelper Id
+thId = TH $ \supp ftcs ->
+  let (id, supp') = freshId supp
+  in  (id, supp', ftcs)
+
+addFunctionTypeChange :: Type -> Id -> TransformerHelper ()
+addFunctionTypeChange t i = TH $ \supp ftcs ->
+  ((), supp, (i, t) : ftcs)
+
+addTypeChangeIf :: (Type -> Bool) -> Type -> Id -> TransformerHelper ()
+addTypeChangeIf p t i
+  | p t       = addFunctionTypeChange t i
+  | otherwise = return ()
+
+getTypeChanges :: TransformerHelper FunctionTypeChanges
+getTypeChanges = TH $ \supp ftcs -> (ftcs, supp, ftcs)
+
+hasChangedType :: Id -> TransformerHelper Bool
+hasChangedType i =
+  do
+    ftcs <- getTypeChanges
+    return . flip any ftcs $ \x -> ((==i) . fst) x
+
+corePackedToCursor :: NameSupply -> CoreModule -> CoreModule
+corePackedToCursor supply mod@(Module name major minor imports decls) =
+  transformerResult supply $
+    do
+      let env   =  typeEnvForModule mod
+      ds'       <- packedToCursor env decls
+      let env'  =  typeEnvForModule $ Module name major minor imports ds'
+      ds''      <- mapM (fixCursorCalls env') ds'
+      ftcs      <- getTypeChanges
+      return $ Module name major minor imports ds''
+
+-- Steps in this function:
+--  * Descend into each declaration
+--  * Find function calls to functions requiring a Needs cursor
+--    * create a new variable name for this needs cursor, and remember its type
+--    * When ascending back up, use this name in a new Let-bind!
+--  * Probably do some stuff with calls to Has cursors as well
+--    * We don't have these yet, so we can't really do anything about that.
+fixCursorCalls :: TypeEnvironment -> CoreDecl -> TransformerHelper CoreDecl
+fixCursorCalls env d@(DeclValue name access mod ty expr customs) =
+  do
+    newExpr <- fixCursorCallsInExpr env expr
+    let newType = ty
+    return $ DeclValue name access mod newType newExpr customs
+fixCursorCalls _ d = return d
+
+fixCursorCallsInExpr :: TypeEnvironment -> Expr -> TransformerHelper Expr
+fixCursorCallsInExpr env (Lam strict v e) =
+  do
+    let innerEnv = typeEnvAddVariable v env
+    e' <- fixCursorCallsInExpr innerEnv e
+    return $ Lam strict v e'
+
+fixCursorCallsInExpr env (Let bs@(NonRec (Bind v be)) e) =
+  do
+    bs' <- NonRec . uncurry Bind <$> fixCursorCallsInBind env v be
+    e'  <- fixCursorCallsInExpr (typeEnvAddBinds bs' env) e
+    return $ Let bs' e'
+
+fixCursorCallsInExpr env (Let bs@(Rec [(Bind v be)]) e) =
+  do
+    bs' <- Rec . (:[]) . uncurry Bind <$> fixCursorCallsInBind env v be
+    e'  <- fixCursorCallsInExpr (typeEnvAddBinds bs' env) e
+    return $ Let bs' e'
+fixCursorCallsInExpr env e = return e
+
+fixCursorCallsInBind :: TypeEnvironment -> Variable -> Expr -> TransformerHelper (Variable, Expr)
+fixCursorCallsInBind env v e
+  -- | trace (show (variableName v) ++ "\n" ++ show (pretty e)) False = undefined
+  | typeOfCoreExpression env e == variableType v
+    = return (v, e)
+  | otherwise
+    = do
+      i <- thId
+      let cursor    = Prim PrimNewCursor
+      let cType     = typeOfCoreExpression env cursor
+      let v'        = Variable i cType
+      let callRes   = Ap e $ cursor
+      let callResT  = typeOfCoreExpression env callRes
+      let (tl, tr)  = getTupleTypes callResT
+      let fst_ = Ap (ApType (ApType (Var $ idFromString "Prelude.fst") tl) tr) callRes
+      return $ (v, fst_)
+
+-- Crashes if you don't actually give a tuple type!
+getTupleTypes :: Type -> (Type, Type)
+getTupleTypes (TAp (TAp (TCon (TConTuple 2)) tl) tr) = (tl, tr)
+
+packedToCursor :: TypeEnvironment -> [CoreDecl] -> TransformerHelper [CoreDecl]
+packedToCursor env = mapM (useCursorsInDecl env)
+
+useCursorsInDecl :: TypeEnvironment -> CoreDecl -> TransformerHelper CoreDecl
+useCursorsInDecl env d@(DeclValue name access mod ty expr customs) =
+  do
+    cExpr <- cursorfyExpr env ty expr
+    let (newExpr, newType) = (cExpr, typeOfCoreExpression env cExpr)
+    addTypeChangeIf (/=ty) newType name
+    return $ DeclValue name access mod newType newExpr customs
+useCursorsInDecl _ d = return d
+
+cursorfyExpr :: TypeEnvironment -> Type -> Expr -> TransformerHelper Expr
+cursorfyExpr env t e = cursorfy' t e
   where
     cursorfy' ty expr = case hasPackedOutput ty of
-      Just xs -> addCursorsToExpr env supply ty expr xs
-      Nothing -> expr
+      Just xs -> addCursorsToExpr env ty expr xs
+      Nothing -> return expr
 
 functionResult :: Type -> Type
 --functionResult x | trace (show $ pretty x) False = undefined
 functionResult (TAp _ x) = x
 functionResult x = x
 
-addCursorsToExpr :: TypeEnvironment -> NameSupply -> Type -> Expr -> [Type] -> Expr
-addCursorsToExpr env s t (Lam strict v e) ts =
-  Lam strict v $ addCursorsToExpr env s t e ts
-addCursorsToExpr env s t (Let bs e) ts =
-  let newE = addCursorsToExpr env s t e ts
-  in  Let bs newE
-addCursorsToExpr env supply ty (Ap (Con x@(ConId _)) e) ts =
-  let
-      vNeeds  = Variable iNeeds
-              $ toPackedIfIn ts
-              $ functionResult
-              $ typeOfCoreExpression env
-              $ Con x
-      e1    = (Ap (Prim $ PrimWriteCtor x) (Var iNeeds))
-      l1    = Let (NonRec (Bind (Variable i1 $ typeOfCoreExpression env e1) e1)) l2
-      e2    = Ap (Ap (Prim PrimWrite) (Var i1)) e
-      l2    = Let (NonRec (Bind (Variable i2 $ typeOfCoreExpression env e2) e2)) e3
-      e3    = Ap (Ap (ApType (ApType (Con (ConTuple 2)) (typeOfCoreExpression env temp1)) (typeOfCoreExpression env temp2)) temp1) temp2
-      temp1 = (Prim PrimFinish `Ap` Var i2) `Ap` Var iNeeds
-      temp2 = Prim PrimToEnd `Ap` Var i2
-      (i1, supp1)     = freshId supply
-      (i2, supp2)     = freshId supp1
-      (iNeeds, supp3) = freshId supp2
-      lam   = Lam True vNeeds l1
-  in  trace (show . pretty $ typeOfCoreExpression env e3) lam
+addCursorsToExpr :: TypeEnvironment -> Type -> Expr -> [Type] -> TransformerHelper Expr
+addCursorsToExpr env t (Lam strict v e) ts =
+  do
+    e' <- addCursorsToExpr env t e ts
+    return $ Lam strict v e'
+addCursorsToExpr env t (Let bs e) ts =
+  do
+    e' <- addCursorsToExpr env t e ts
+    return $ Let bs e'
+addCursorsToExpr env ty (Ap (Con x@(ConId _)) e) ts =
+  do
+    i1 <- thId
+    i2 <- thId
+    iNeeds <- thId
+    let temp1 = (Prim PrimFinish `Ap` Var i2) `Ap` Var iNeeds
+    let temp2 = Prim PrimToEnd `Ap` Var i2
+    let e3  = Ap (Ap (ApType (ApType (Con (ConTuple 2)) (typeOfCoreExpression env temp1)) (typeOfCoreExpression env temp2)) temp1) temp2
+    let e2  = Ap (Ap (Prim PrimWrite) (Var i1)) e
+    let l2  = Let (NonRec (Bind (Variable i2 $ typeOfCoreExpression env e2) e2)) e3
+    let e1  = Ap (Prim $ PrimWriteCtor x) (Var iNeeds)
+    let l1  = Let (NonRec (Bind (Variable i1 $ typeOfCoreExpression env e1) e1)) l2
+    let vNeeds  = Variable iNeeds
+            $ toPackedIfIn ts
+            $ functionResult
+            $ typeOfCoreExpression env
+            $ Con x
+    let lam   = Lam True vNeeds l1
+    return lam
   where
     toPackedIfIn ts t
       | t `elem` ts = toNeedsCursor t
       | otherwise   = t
-addCursorsToExpr env supply ty expr ts = error . show $ pretty expr
+addCursorsToExpr env ty expr ts = return . error . show $ pretty expr
 {-
     ( foldr typeTransform (addHasCursor t ts) cursorTypes
     , useCursors . fst $ foldr exprTransform (e, supply) cursorTypes

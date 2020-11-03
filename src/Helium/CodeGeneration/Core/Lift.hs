@@ -212,7 +212,10 @@ liftAlt supply scope (Alt pat expr) env = (Alt pat expr', decls)
     env' = modifyTypeEnv (typeEnvAddVariables newVars) env
     newVars = patternVariables (typeEnv env) pat
 
+-- We need to make sure that if a PrimFun is being applied, this is not a valid thunk.
 isValidThunk :: Expr -> Bool
+isValidThunk (Ap (Prim _) _) = False
+isValidThunk (Ap e@(Ap _ _) _) = isValidThunk e
 isValidThunk (Ap _ _) = True
 isValidThunk (Forall _ _ e) = isValidThunk e
 isValidThunk (ApType e _) = isValidThunk e
