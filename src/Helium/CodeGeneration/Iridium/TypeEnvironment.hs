@@ -73,3 +73,7 @@ resolveFunction :: TypeEnv -> Id -> Maybe (Int, Type)
 resolveFunction env name = case lookupMap name (teValues env) of
   Just (ValueFunction arity fn _) -> Just (arity, fn)
   _ -> Nothing
+
+resolvePrimFun :: Core.PrimFun -> (Int, Type)
+resolvePrimFun = Core.typeOfPrimFunArity
+

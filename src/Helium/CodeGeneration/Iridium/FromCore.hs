@@ -33,6 +33,11 @@ import Helium.CodeGeneration.Iridium.FileCache
 import Helium.CodeGeneration.Iridium.FromCoreImports
 import Helium.CodeGeneration.Iridium.Utils
 
+data ApplicationTarget
+  = Function !Id
+  | Prim !Core.PrimFun
+  | Con !Core.Con
+
 fromCore :: FileCache -> NameSupply -> Core.CoreModule -> IO Module
 fromCore cache supply mod@(Core.Module name _ _ dependencies decls) = do
   imports <- fromCoreImports cache imported
@@ -244,7 +249,7 @@ toInstruction supply env continue (Core.Var var) = case resolve env var of
     (nameThunk, supply'') = freshId supply'
 
 toInstruction supply env continue expr = case getApplicationOrConstruction expr [] of
-  (Left (Core.ConId con), args) ->
+  (Con (Core.ConId con), args) ->
     let
       dataTypeCon@(DataTypeConstructor dataName fntype) = case valueDeclaration env con of
         ValueConstructor c -> c
@@ -254,7 +259,7 @@ toInstruction supply env continue expr = case getApplicationOrConstruction expr 
       castInstructions
         +> LetAlloc [Bind x (BindTargetConstructor dataTypeCon) casted]
         +> ret supplyRet env x continue
-  (Left con@(Core.ConTuple arity), args) ->
+  (Con con@(Core.ConTuple arity), args) ->
     let
       fntype = Core.typeOfCoreExpression (teCoreEnv env) (Core.Con con)
       (args', castInstructions, _) = maybeCasts supply''' env fntype args
@@ -262,7 +267,7 @@ toInstruction supply env continue expr = case getApplicationOrConstruction expr 
       castInstructions
         +> LetAlloc [Bind x (BindTargetTuple arity) args']
         +> ret supplyRet env x continue
-  (Right fn, args)
+  (Function fn, args)
     | all isLeft args && not (isGlobalFunction $ resolve env fn) ->
       let
         e1 = (Instantiate (resolveVariable env fn) $ map (fromLeft $ error "FromCore.toInstruction: expected Left") args)
@@ -331,6 +336,17 @@ toInstruction supply env continue expr = case getApplicationOrConstruction expr 
               +> LetAlloc [bind]
               +> Let y (Eval $ VarLocal $ Local x tp)
               +> ret supplyRet env y continue
+  (Prim prim, args) ->
+      let argsArity = length $ filter isRight args
+      in case resolvePrimFun prim of
+        (arity, fntype)
+          | arity == argsArity ->
+            -- Applied the correct number of arguments, compile to a Call.
+            let
+              (args', castInstructions, _) = maybeCasts supply''' env fntype args
+            in
+              castInstructions +> Let x (CallPrimFun prim args') +> ret supplyRet env x continue
+          | otherwise -> error $ "Wrong amount of arguments in prim fun! Expected: " ++ show arity ++ ", but got: " ++ show argsArity
   where
     (supply1, supplyRet) = splitNameSupply supply
     (x, supply') = freshId supply1
@@ -462,17 +478,18 @@ bind supply env (Core.Bind (Core.Variable x _) val) = Bind x target $ map toArg 
     toArg (Right var) = Right $ resolveVariable env var
     target :: BindTarget
     target = case apOrCon of
-      Left (Core.ConId con) ->
+      Con (Core.ConId con) ->
         let ValueConstructor constructor = valueDeclaration env con
         in BindTargetConstructor constructor
-      Left (Core.ConTuple arity) -> BindTargetTuple arity
-      Right fn -> case resolveFunction env fn of
+      Con (Core.ConTuple arity) -> BindTargetTuple arity
+      Function fn -> case resolveFunction env fn of
         Just (arity, fntype) ->
           BindTargetFunction $ GlobalFunction fn arity fntype
         _
           | null args -> error $ "bind: a secondary thunk cannot have zero arguments"
         _ ->
           BindTargetThunk $ resolveVariable env fn
+      Prim prim -> BindTargetPrimFun prim
 
 coreBindLocal :: TypeEnv -> Core.Bind -> Local
 coreBindLocal env (Core.Bind (Core.Variable name tp) expr) = 
@@ -481,8 +498,8 @@ coreBindLocal env (Core.Bind (Core.Variable name tp) expr) =
 
 coreBindIsStrict :: TypeEnv -> Core.Expr -> Bool
 coreBindIsStrict env val = case apOrCon of
-  Left _ -> True
-  Right fn -> case resolveFunction env fn of
+  Con _ -> True
+  Function fn -> case resolveFunction env fn of
     Just (arity, _)
       | length (filter isRight args) >= arity -> False
       | otherwise -> True -- Not all arguments were passed, so the value is already in WHNF
@@ -494,9 +511,10 @@ conId :: Core.Con -> Id
 conId (Core.ConId x) = x
 conId _ = error "conId: unexpected ConTuple in gatherCaseConstructorAlts"
 
-getApplicationOrConstruction :: Core.Expr -> [Either Core.Type Id] -> (Either Core.Con Id, [Either Core.Type Id])
-getApplicationOrConstruction (Core.Var x) accum = (Right x, accum)
-getApplicationOrConstruction (Core.Con c) accum = (Left c, accum)
+getApplicationOrConstruction :: Core.Expr -> [Either Core.Type Id] -> (ApplicationTarget, [Either Core.Type Id])
+getApplicationOrConstruction (Core.Var x)  accum = (Function x,  accum)
+getApplicationOrConstruction (Core.Con c)  accum = (Con c,  accum)
+getApplicationOrConstruction (Core.Prim p) accum = (Prim p, accum)
 getApplicationOrConstruction (Core.Ap expr (Core.Var arg)) accum = getApplicationOrConstruction expr (Right arg : accum)
 getApplicationOrConstruction (Core.ApType expr tp) accum = getApplicationOrConstruction expr (Left tp : accum)
 getApplicationOrConstruction e _ = error $ "getApplicationOrConstruction: expression is not properly normalized: " ++ show (pretty e)

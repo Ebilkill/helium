@@ -90,6 +90,7 @@ instance Show Literal where
 instance ShowWithQuantors Expr where
   showsQ quantors (Literal lit) = text "literal " . shows lit
   showsQ quantors (Call fn args) = text "call " . shows fn . text " $ " . showCallArguments quantors args
+  showsQ quantors (CallPrimFun prim args) = text "callprim " . shows prim . text " $ " . showCallArguments quantors args
   showsQ quantors (Instantiate var args) = text "instantiate " . showsQ quantors var . text " " . showTypeArguments quantors args
   showsQ quantors (Eval var) = text "eval " . showsQ quantors var
   showsQ quantors (Var var) = text "var " . showsQ quantors var
@@ -114,6 +115,7 @@ instance ShowWithQuantors BindTarget where
   showsQ quantors (BindTargetThunk var) = text "thunk " . showsQ quantors var
   showsQ quantors (BindTargetConstructor con) = text "constructor " . shows con
   showsQ quantors (BindTargetTuple arity) = text "tuple " . shows arity
+  showsQ quantors (BindTargetPrimFun prim) = text "primfun " . shows prim
 
 instance Show MatchTarget where
   showsPrec _ (MatchTargetConstructor con) = shows con

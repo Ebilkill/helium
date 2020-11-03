@@ -18,6 +18,7 @@ import Lvm.Common.Id(Id, stringFromId, idFromString)
 import Lvm.Common.IdMap(mapFromList, emptyMap)
 import Lvm.Core.Module(Custom(..), DeclKind, Arity, Field)
 import Lvm.Core.Type
+import Lvm.Core.Expr (PrimFun(..), typeOfPrimFun)
 import Data.List(intercalate)
 import Data.Either (isLeft, isRight)
 
@@ -186,6 +187,8 @@ data Bind = Bind { bindVar :: !Id, bindTarget :: !BindTarget, bindArguments :: !
 data BindTarget
   -- * The object points at a function. The object is thus a primary thunk.
   = BindTargetFunction !GlobalFunction
+  -- * The object points at a primitive function. The object is thus a primary thunk.
+  | BindTargetPrimFun  !PrimFun
   -- * The object points at another thunk and is thus a secondary thunk.
   | BindTargetThunk !Variable
   -- * The bind represents a constructor invocation.
@@ -253,6 +256,10 @@ bindType env (Bind _ (BindTargetFunction (GlobalFunction fn arity fntype)) args)
     tp = typeRemoveArgumentStrictness $ typeApplyArguments env fntype args
     valueArgCount = length $ filter isRight args
 bindType env (Bind _ (BindTargetThunk fn) args) = typeApplyArguments env (variableType fn) args
+-- For primitive functions, we know that we have all arguments. Therefore, we can evaluate the function immediately?
+-- TODO: Check this assertion!
+bindType env (Bind _ (BindTargetPrimFun prim) args) 
+  = typeToStrict $ typeApplyArguments env (typeOfPrimFun prim) args
 
 bindLocal :: TypeEnvironment -> Bind -> Local
 bindLocal env b@(Bind var _ _) = Local var $ bindType env b
@@ -278,6 +285,8 @@ data Expr
   -- Calls a primitive instruction, like integer addition. The number of arguments should be equal to the number of parameters
   -- that the primitive expects.
   | PrimitiveExpr !Id ![Either Type Variable]
+  -- Calls a PrimFun, which at the moment, is all cursor-based functions. The same thing about arg count as above applies
+  | CallPrimFun !PrimFun ![Either Type Variable]
   -- Denotes an undefined value, not the Haskell function 'undefined'. This expression does not throw, but just has some unknown value.
   -- This can be used for a value which is not used.
   | Undefined !Type
@@ -300,6 +309,7 @@ typeOfExpr _ (Literal (LitFloat precision _)) = TStrict $ TCon $ TConDataType $ 
 typeOfExpr _ (Literal (LitString _)) = TStrict $ TAp (TCon $ TConDataType $ idFromString "[]") $ TCon $ TConDataType $ idFromString "Char"
 typeOfExpr _ (Literal (LitInt tp _)) = TStrict $ TCon $ TConDataType $ idFromString $ show tp
 typeOfExpr env (Call (GlobalFunction _ _ t) args) = typeToStrict $ typeApplyArguments env t args
+typeOfExpr env (CallPrimFun prim args) = typeToStrict $ typeApplyArguments env (typeOfPrimFun prim) args
 typeOfExpr env (Instantiate v args) = typeNormalizeHead env $ typeApplyList (variableType v) args
 typeOfExpr _ (Eval v) = typeToStrict $ variableType v
 typeOfExpr _ (Var v) = variableType v
@@ -314,6 +324,7 @@ typeOfExpr _ (Seq _ v) = variableType v
 dependenciesOfExpr :: Expr -> [Variable]
 dependenciesOfExpr (Literal _) = []
 dependenciesOfExpr (Call g args) = [arg | Right arg <- args]
+dependenciesOfExpr (CallPrimFun p args) = [arg | Right arg <- args]
 dependenciesOfExpr (Instantiate var _) = [var]
 dependenciesOfExpr (Eval var) = [var]
 dependenciesOfExpr (Var var) = [var]
