@@ -18,6 +18,7 @@ import Data.List (group, groupBy, sort, elemIndex)
 import qualified Control.Exception as CE (catch, IOException, evaluate)
 import System.FilePath
 import Helium.Utils.Logger
+import Data.Char (toUpper)
 
 -- | Concrete representation of holes
 hole :: String
@@ -40,6 +41,11 @@ commaList :: [String] -> String
 commaList [] = ""
 commaList [x] = x
 commaList (x:xs) = x ++ ", " ++ commaList xs
+
+safeIndex :: [a] -> Int -> Maybe a
+safeIndex []     !_ = Nothing
+safeIndex (x:_)  0  = Just x
+safeIndex (_:xs) !i = safeIndex xs (i - 1)
 
 -------------------------------------------------------
 -- Tuples
@@ -159,3 +165,7 @@ readSourceFile fullName =
 maxInt, minInt :: Integer
 maxInt = 1073741823
 minInt = -1073741823
+
+firstUpper :: String -> String
+firstUpper (c:cs) = toUpper c : cs
+firstUpper []     = []
