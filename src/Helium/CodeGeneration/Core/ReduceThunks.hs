@@ -53,4 +53,9 @@ isCheap (Let _ expr) = isCheap expr
 isCheap (Var name) = name == idFromString "$primPackedToString"
 isCheap (Forall _ _ e) = isCheap e
 isCheap (ApType e _) = isCheap e
+isCheap (Prim PrimNewCursor)      = True
+isCheap (Prim PrimFinish)         = True
+isCheap (Prim PrimToEnd)          = True
+isCheap (Prim PrimWrite)          = True
+isCheap (Prim (PrimWriteCtor _))  = True
 isCheap _ = False

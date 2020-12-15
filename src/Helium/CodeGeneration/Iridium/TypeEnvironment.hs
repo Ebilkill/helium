@@ -74,6 +74,6 @@ resolveFunction env name = case lookupMap name (teValues env) of
   Just (ValueFunction arity fn _) -> Just (arity, fn)
   _ -> Nothing
 
-resolvePrimFun :: Core.PrimFun -> (Int, Type)
-resolvePrimFun = Core.typeOfPrimFunArity
+resolvePrimFun :: TypeEnv -> Core.PrimFun -> (Int, Type)
+resolvePrimFun env = Core.typeOfPrimFunArity (teCoreEnv env)
 

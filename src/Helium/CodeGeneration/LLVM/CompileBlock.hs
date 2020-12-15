@@ -26,7 +26,9 @@ import qualified Helium.CodeGeneration.LLVM.Builtins as Builtins
 import Lvm.Common.Id(Id, NameSupply, splitNameSupply, splitNameSupplies, mapWithSupply, freshId, idFromString)
 import Lvm.Common.IdMap(findMap)
 import qualified Lvm.Core.Type as Core
-import Lvm.Core.Expr (PrimFun(..), typeOfPrimFun)
+import Lvm.Core.Expr (PrimFun(..))
+
+import Helium.CodeGeneration.Core.TypeEnvironment (typeOfPrimFun, typeOfPrimFunArity)
 
 import qualified Helium.CodeGeneration.Iridium.Data as Iridium
 import qualified Helium.CodeGeneration.Iridium.Type as Iridium
@@ -279,7 +281,7 @@ compileExpression env supply expr@(Iridium.CallPrimFun PrimNewCursor args) name 
     (namePtr, supply') = freshName supply
     (nameArray, _) = freshName supply'
 
-compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor con) [Right cursor]) name =
+compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restList, Right cursor]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
   -- Cast [n x i32]* to i32*
@@ -304,11 +306,39 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor con) [Right cur
     vectorType = IntegerType 8
     vector = Int 8 $ fromIntegral 0
 
-compileExpression env supply (Iridium.CallPrimFun PrimWrite [Right cursor, Right val]) name =
+compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left resType, Left writeType, Right cursor, Right val]) name =
+  -- TODO do something with the writeType. I think this should generally be a
+  -- type that is primitive, i.e. an Int or a Char or something similar;
+  -- assuming only PACKED_ or primitive types are allowed in PACKED_ types,
+  -- this should be true?
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
   -- Cast [n x i32]* to i32*
   , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  -- The size starts in the first byte of the cursor
+  , cursorSizeIndexPtr := BitCast (toOperand env cursor) (pointer $ IntegerType 32) []
+  , cursorSizeIndex := Load False (LocalReference (pointer $ IntegerType 32) cursorSizeIndexPtr) Nothing (fromIntegral 1) []
+  -- Reserve space for the size
+  , x := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.writeCursor
+    , arguments =
+      [ (toOperand env cursor, [])
+      -- The constant 4 here is the length of the int that keeps track of the
+      -- size of this element; for an integer, the value of this element would
+      -- be 8, so 4 bytes is overkill. However, for a really big tree, 4 bytes
+      -- mightn't be enough. This value is a constant, but we might change this
+      -- to be bigger at some point.
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 4, [])
+      , (LocalReference voidPointer nameArray, [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  , cursorSizeStartPtr := BitCast (toOperand env cursor) (pointer $ IntegerType 32) []
+  , cursorSizeStart := Load False (LocalReference (pointer $ IntegerType 32) cursorSizeStartPtr) Nothing (fromIntegral 1) []
   , toName name := Call
     { tailCallKind = Nothing
     , callingConvention = C
@@ -316,30 +346,56 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Right cursor, Right
     , function = Right $ Builtins.writeCursor
     , arguments =
       [ (toOperand env cursor, [])
-      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 4, [])
+      -- This constant 8 is the size to write. Note that this should not be a
+      -- constant; this is now hardcoded for 64-bit integers!
+      -- TODO make sure that this takes the size of what is supposed to be
+      -- written here. This would mostly be either Ints or Chars, since other
+      -- data types are covered by other writes.
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 8, [])
       , (LocalReference voidPointer nameArray, [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  , y := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.writeCursorSize
+    , arguments =
+      [ (LocalReference (IntegerType 32) cursorSizeIndex, [])
+      , (LocalReference (IntegerType 32) cursorSizeStart, [])
+      , (toOperand env cursor, [])
       ]
     , functionAttributes = []
     , metadata = []
     }
   ]
   where
-    (namePtr, supply') = freshName supply
-    (nameArray, _) = freshName supply'
+    (namePtr, supply1) = freshName supply
+    (nameArray, supply2) = freshName supply1
+    (cursorSizeIndexPtr, supply3) = freshName supply2
+    (cursorSizeIndex, supply4) = freshName supply3
+    (cursorSizeStartPtr, supply5) = freshName supply4
+    (cursorSizeStart, supply6) = freshName supply5
+    -- We need a name for some instructions that I'd rather not give a name,
+    -- but oh well.
+    (x, supply7) = freshName supply6
+    (y, _) = freshName supply7
     vectorType = IntegerType 64
 
 -- TODO make sure that an end-pointer exists?
-compileExpression env supply (Iridium.CallPrimFun PrimToEnd [Right cursor]) name =
+compileExpression env supply (Iridium.CallPrimFun PrimToEnd [Left resType, Right cursor]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   ]
   ++ cast supply env (toOperand env cursor) (toName name) t t
   where
-    t = typeOfPrimFun PrimToEnd
+    t = typeOfPrimFun (envTypeEnv env) PrimToEnd
     (namePtr, supply') = freshName supply
     (nameArray, _) = freshName supply'
     vectorType = IntegerType 32
 
-compileExpression env supply (Iridium.CallPrimFun PrimFinish [Right cursorStart, Right cursorEnd]) name =
+compileExpression env supply (Iridium.CallPrimFun PrimFinish [Left restList, Right cursorStart, Right cursorEnd]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   , toName name := Call
     { tailCallKind = Nothing

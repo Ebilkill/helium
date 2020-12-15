@@ -107,7 +107,7 @@ analyseApplication env (Con (ConId name)) arity = case lookupMap name $ envFunct
     | arity >= length args -> Analysis emptySet args
   _ -> Analysis emptySet []
 analyseApplication _ (Con _) _ = Analysis emptySet []
-analyseApplication _ (Prim prim) arity = case typeOfPrimFunArity prim of
+analyseApplication env (Prim prim) arity = case typeOfPrimFunArity (envTypeEnv env) prim of
   (n, _)
     -> Analysis emptySet $ replicate n True
 analyseApplication _ expr _ = error ("Strictness.analyseApplication: expected application, got " ++ show (pretty expr))

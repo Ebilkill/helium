@@ -10,6 +10,8 @@
 
 module Helium.CodeGeneration.Iridium.FromCore where
 
+import Data.List
+
 import Helium.CodeGeneration.Core.FunctionType(functionsMap)
 import Lvm.Common.Id(Id, NameSupply, freshId, splitNameSupply, mapWithSupply, idFromString, stringFromId, freshIdFromId)
 import Lvm.Common.IdMap
@@ -338,7 +340,7 @@ toInstruction supply env continue expr = case getApplicationOrConstruction expr 
               +> ret supplyRet env y continue
   (Prim prim, args) ->
       let argsArity = length $ filter isRight args
-      in case resolvePrimFun prim of
+      in case resolvePrimFun env prim of
         (arity, fntype)
           | arity == argsArity ->
             -- Applied the correct number of arguments, compile to a Call.

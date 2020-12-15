@@ -57,7 +57,7 @@ data Analysis
 checkModule :: Module -> [TypeError]
 checkModule mod = errors
   where
-    typeEnv = envWithSynonyms mod
+    typeEnv = envWithSynonymsAndConstructors mod
     analysis =
       fromList (map (analyseMethod typeEnv) $ moduleMethods mod)
       `AJoin` fromList (map analyseAbstractMethod $ moduleAbstractMethods mod)

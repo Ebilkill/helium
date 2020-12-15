@@ -18,9 +18,11 @@ import Lvm.Common.Id(Id, stringFromId, idFromString)
 import Lvm.Common.IdMap(mapFromList, emptyMap)
 import Lvm.Core.Module(Custom(..), DeclKind, Arity, Field)
 import Lvm.Core.Type
-import Lvm.Core.Expr (PrimFun(..), typeOfPrimFun)
+import Lvm.Core.Expr (PrimFun(..))
 import Data.List(intercalate)
 import Data.Either (isLeft, isRight)
+
+import Helium.CodeGeneration.Core.TypeEnvironment
 
 import Helium.CodeGeneration.Iridium.Type
 import Helium.CodeGeneration.Iridium.Primitive(findPrimitive, primType)
@@ -259,7 +261,7 @@ bindType env (Bind _ (BindTargetThunk fn) args) = typeApplyArguments env (variab
 -- For primitive functions, we know that we have all arguments. Therefore, we can evaluate the function immediately?
 -- TODO: Check this assertion!
 bindType env (Bind _ (BindTargetPrimFun prim) args) 
-  = typeToStrict $ typeApplyArguments env (typeOfPrimFun prim) args
+  = typeToStrict $ typeApplyArguments env (typeOfPrimFun env prim) args
 
 bindLocal :: TypeEnvironment -> Bind -> Local
 bindLocal env b@(Bind var _ _) = Local var $ bindType env b
@@ -309,7 +311,7 @@ typeOfExpr _ (Literal (LitFloat precision _)) = TStrict $ TCon $ TConDataType $ 
 typeOfExpr _ (Literal (LitString _)) = TStrict $ TAp (TCon $ TConDataType $ idFromString "[]") $ TCon $ TConDataType $ idFromString "Char"
 typeOfExpr _ (Literal (LitInt tp _)) = TStrict $ TCon $ TConDataType $ idFromString $ show tp
 typeOfExpr env (Call (GlobalFunction _ _ t) args) = typeToStrict $ typeApplyArguments env t args
-typeOfExpr env (CallPrimFun prim args) = typeToStrict $ typeApplyArguments env (typeOfPrimFun prim) args
+typeOfExpr env (CallPrimFun prim args) = typeToStrict $ typeApplyArguments env (typeOfPrimFun env prim) args
 typeOfExpr env (Instantiate v args) = typeNormalizeHead env $ typeApplyList (variableType v) args
 typeOfExpr _ (Eval v) = typeToStrict $ variableType v
 typeOfExpr _ (Var v) = variableType v
@@ -351,6 +353,14 @@ callingConvention (_ : as) = callingConvention as
 -- Checks whether this module has a declaration or definition for this function
 declaresFunction :: Module -> Id -> Bool
 declaresFunction (Module _ _ _ _ _ abstracts methods) name = any ((== name) . declarationName) abstracts || any ((== name) . declarationName) methods
+
+envWithSynonymsAndConstructors :: Module -> TypeEnvironment
+envWithSynonymsAndConstructors (Module _ _ _ datas synonyms _ _) =
+    TypeEnvironment (mapFromList synonymsList) (mapFromList constructors) emptyMap
+  where
+    constructors = concatMap (\(Declaration _ _ _ _ (DataType xs)) -> dtMap xs) datas
+    dtMap = map (\(Declaration name _ _ _ (DataTypeConstructorDeclaration ty _)) -> (name, typeRemoveArgumentStrictness ty))
+    synonymsList = map (\(Declaration name _ _ _ (TypeSynonym tp)) -> (name, tp)) synonyms
 
 envWithSynonyms :: Module -> TypeEnvironment
 envWithSynonyms (Module _ _ _ _ synonyms _ _) = TypeEnvironment (mapFromList synonymsList) emptyMap emptyMap

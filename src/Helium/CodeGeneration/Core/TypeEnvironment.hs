@@ -21,6 +21,7 @@ import Lvm.Common.IdMap
 
 import Text.PrettyPrint.Leijen
 
+-- TODO: Constructors need to be saved (separately?) with strictness. Can be kept in Globals as well (but without strictness)
 data TypeEnvironment = TypeEnvironment
   { typeEnvSynonyms :: IdMap Type
   , typeEnvGlobalValues :: IdMap Type
@@ -83,6 +84,11 @@ typeNormalizeHead env = normalize False
   where
     normalize strict (TAp t1 t2) = case normalize False t1 of
       t1'@(TForall _ _ _) -> normalize strict $ typeApply t1' t2
+      t1'@(TCon TConCons) ->
+        let ret = TAp (TCon TConCons) $ normalize False t2
+        in  if strict then TStrict ret else ret
+      t1'@(TCon TConReturnType) -> typeReturnType env $ normalize False t2
+      t1'@(TAp (TCon TConAppend) t3) -> typeAppendFunArgs env (normalize False t3) t2
       t1' ->
         let tp = TAp t1' t2
         in if strict then TStrict tp else tp
@@ -90,8 +96,23 @@ typeNormalizeHead env = normalize False
     normalize strict t1@(TCon (TConDataType name)) = case lookupMap name $ typeEnvSynonyms env of
       Just t2 -> normalize strict t2
       Nothing -> if strict then TStrict t1 else t1
+    normalize strict t1'@(TCursor (TCursorNeeds ins out)) = 
+      let ret = TCursor (TCursorNeeds (normalize False ins) (normalize False out))
+      in  if strict then TStrict ret else ret
     normalize True t1 = TStrict t1
     normalize False t1 = t1
+
+-- Appends the types of the function arguments (but not the return type) of the
+-- first type to the list that is the second type.
+typeAppendFunArgs :: TypeEnvironment -> Type -> Type -> Type
+typeAppendFunArgs env (TAp (TAp (TCon TConFun) t1) t2) xs = TAp (TAp (TCon TConCons) t1) $ typeAppendFunArgs env (typeNormalizeHead env t2) xs
+typeAppendFunArgs env t@(TVar _) xs = TAp (TAp (TCon TConAppend) t) xs
+typeAppendFunArgs env _ xs = xs -- We have found a concrete return value, which we do not add.
+
+typeReturnType :: TypeEnvironment -> Type -> Type
+typeReturnType env (TAp (TAp (TCon TConFun) t1) t2) = typeReturnType env $ typeNormalizeHead env t2
+typeReturnType _ x@(TVar _) = TCon TConReturnType `TAp` x
+typeReturnType _ x = x
 
 typeOfId :: TypeEnvironment -> Id -> Type
 typeOfId env name = case lookupMap name $ typeEnvGlobalValues env of
@@ -149,7 +170,7 @@ typeOfCoreExpression env (Var x) = typeOfId env x
 typeOfCoreExpression _ (Lit lit) = typeOfLiteral lit
 
 -- Types of Primitive functions; things like cursor functions, etc.
-typeOfCoreExpression _ (Prim p) = typeOfPrimFun p
+typeOfCoreExpression env (Prim p) = typeOfPrimFun env p
 
 typeTuple :: Int -> Type
 typeTuple arity = foldr (\var -> TForall (Quantor Nothing) KStar) (typeFunction (map TVar vars) tp) vars
@@ -174,6 +195,8 @@ typeEqual' env checkStrict t1@(TCon _) t2 = typeEqualNoTypeSynonym env checkStri
 typeEqual' env checkStrict t1 t2@(TCon _) = typeEqualNoTypeSynonym env checkStrict (typeNormalizeHead env t1) (typeNormalizeHead env t2)
 typeEqual' env checkStrict t1@(TAp _ _) t2 = typeEqualNoTypeSynonym env checkStrict (typeNormalizeHead env t1) (typeNormalizeHead env t2)
 typeEqual' env checkStrict t1 t2@(TAp _ _) = typeEqualNoTypeSynonym env checkStrict (typeNormalizeHead env t1) (typeNormalizeHead env t2)
+typeEqual' env checkStrict t1@(TCursor _) t2 = typeEqualNoTypeSynonym env checkStrict (typeNormalizeHead env t1) (typeNormalizeHead env t2)
+typeEqual' env checkStrict t1 t2@(TCursor _) = typeEqualNoTypeSynonym env checkStrict (typeNormalizeHead env t1) (typeNormalizeHead env t2)
 typeEqual' env checkStrict (TForall _ _ t1) (TForall _ _ t2) =
   typeEqual' env checkStrict t1 t2
 typeEqual' env _ _ _ = False
@@ -188,6 +211,9 @@ typeEqualNoTypeSynonym _ _ _ (TAp _ _) = False
 typeEqualNoTypeSynonym _ _ (TCon c1) (TCon c2) = c1 == c2
 typeEqualNoTypeSynonym _ _ (TCon _) _ = False
 typeEqualNoTypeSynonym _ _ _ (TCon _) = False
+typeEqualNoTypeSynonym _ _ (TCursor c1) (TCursor c2) = c1 == c2
+typeEqualNoTypeSynonym _ _ (TCursor _) _ = False
+typeEqualNoTypeSynonym _ _ _ (TCursor _) = False
 typeEqualNoTypeSynonym env checkStrict t1 t2 = typeEqual' env checkStrict t1 t2
 
 typeOfLiteral :: Literal -> Type
@@ -239,3 +265,69 @@ updateFunctionTypeStrictness env (strict : strictness) tp = case typeNormalizeHe
       TAp (TAp (TCon TConFun) tArg')
         $ updateFunctionTypeStrictness env strictness tReturn
   _ -> error "updateFunctionTypeStrictness: expected function type"
+
+-- TODO: REMOVE THESE LATER, just here for testing
+packedIntType, intType :: Type
+packedIntType = TCon $ typeConFromString "TreeTest.PACKED_Int"
+intType       = TCon $ typeConFromString "Int"
+
+-- The reason this function has been moved here, is so that Iridium can reach it too!
+typeOfPrimFunArity :: TypeEnvironment -> PrimFun -> (Int, Type)
+typeOfPrimFunArity _ PrimFinish = (,) 2 $
+  TForall (Quantor Nothing) KStar $
+  typeFunction
+    [ TStrict $ TCursor (TCursorNeeds (TCon TConNil) $ TVar 0)
+    , TStrict $ TCursor (TCursorNeeds (typeList [TVar 0]) $ TVar 0)
+    ]
+    (TVar 0) -- TODO: Return Has cursor
+typeOfPrimFunArity _ PrimRead   = undefined
+typeOfPrimFunArity _ PrimWrite  = (,) 2 $
+  TForall (Quantor Nothing) KStar $
+  TForall (Quantor Nothing) KStar $
+  TForall (Quantor Nothing) KStar $
+  typeFunction
+    [ TStrict $ TCursor (TCursorNeeds (TAp (TAp (TCon TConCons) (TVar 0)) $ TVar 2) $ TVar 1)
+    , TStrict $ TVar 0
+    ]
+    (TCursor (TCursorNeeds (TCon TConNil) $ TVar 1))
+-- The WriteCtor case needs a better solution. This way, it can only write
+-- ctors to cursors when the ctor requires at most one argument. That's not
+-- acceptable!
+typeOfPrimFunArity env (PrimWriteCtor c) = generateWriteCtor $ typeOfCoreExpression env $ Con c
+typeOfPrimFunArity _ PrimToEnd = (,) 1 $
+  TForall (Quantor Nothing) KStar $
+  typeFunction
+    [ TStrict $ TCursor $ TCursorNeeds (TCon TConNil) $ TVar 0
+    ]
+    (TCursor (TCursorEnd 0)) -- TODO: Implement addresses for cursors
+typeOfPrimFunArity _ PrimNewCursor = (,) 0 $
+  TForall (Quantor Nothing) KStar $
+  TCursor $ TCursorNeeds (typeList [TVar 0]) $ TVar 0
+
+typeOfPrimFun :: TypeEnvironment -> PrimFun -> Type
+typeOfPrimFun env = snd . typeOfPrimFunArity env
+
+generateWriteCtor (TAp (TAp (TCon TConFun) a) b) =
+    let (arity, fun) = generateWriteCtor b
+    in  (arity, growResultCursor a fun)
+  where
+    growResultCursor = go' 0
+    go' :: Int -> Type -> Type -> Type
+    go' n a (TForall q k t) = TForall q k $ go' (n + 1) a t
+    go' n a (TAp (TAp (TCon TConFun) cIn) cOut) = case a of
+      TVar _ ->
+        TForall (Quantor Nothing) KStar $
+        TAp (TAp (TCon TConFun) cIn) $ addToNeeds (TVar n) cOut
+      x ->
+        TAp (TAp (TCon TConFun) cIn) $ addToNeeds x cOut
+
+    addToNeeds :: Type -> Type -> Type
+    addToNeeds x (TCursor (TCursorNeeds ins out)) =
+      TCursor $ flip TCursorNeeds out $ TAp (TAp (TCon TConCons) x) ins
+generateWriteCtor t = (,) 1 $
+    TForall (Quantor Nothing) KStar $
+    typeFunction [fullNeeds (TVar 0)] $ emptyNeeds (TVar 0)
+  where
+    fullNeeds restList = TStrict $ TCursor $ TCursorNeeds ((TCon TConCons `TAp` t) `TAp` restList) t
+    emptyNeeds restList = TCursor $ TCursorNeeds restList t
+

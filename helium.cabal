@@ -157,6 +157,7 @@ Library
     Helium.CodeGeneration.Core.LetSort
     Helium.CodeGeneration.Core.Lift
     Helium.CodeGeneration.Core.Normalize
+    Helium.CodeGeneration.Core.PackedToCursor
     Helium.CodeGeneration.Core.ReduceThunks
     Helium.CodeGeneration.Core.RemoveAliases
     Helium.CodeGeneration.Core.RemoveDead

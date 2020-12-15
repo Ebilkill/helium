@@ -24,6 +24,7 @@ import Debug.Trace (trace)
 
 import Text.PrettyPrint.Leijen hiding ((<$>))
 
+-- Defining some stuff that helps with the rest of the file
 type FunctionTypeChanges = [FunctionTypeChange] -- A list of function IDs with their new types
 type FunctionTypeChange  = (Id, Type)
 
@@ -82,8 +83,9 @@ hasChangedType :: Id -> TransformerHelper Bool
 hasChangedType i =
   do
     ftcs <- getTypeChanges
-    return . flip any ftcs $ \x -> ((==i) . fst) x
+    return $ any (\x -> fst x == i) ftcs
 
+-- Begin of Packed to Cursor conversion
 corePackedToCursor :: NameSupply -> CoreModule -> CoreModule
 corePackedToCursor supply mod@(Module name major minor imports decls) =
   transformerResult supply $
@@ -133,16 +135,19 @@ fixCursorCallsInExpr env e = return e
 fixCursorCallsInBind :: TypeEnvironment -> Variable -> Expr -> TransformerHelper (Variable, Expr)
 fixCursorCallsInBind env v e
   -- | trace (show (variableName v) ++ "\n" ++ show (pretty e)) False = undefined
-  | typeOfCoreExpression env e == variableType v
+  | typeEqual env (typeOfCoreExpression env e) (variableType v)
     = return (v, e)
   | otherwise
     = do
       i <- thId
-      let cursor    = Prim PrimNewCursor
+      let te        = typeOfCoreExpression env e
+      let (TAp (TAp (TCon TConFun) _) eResT) = te
+      let (innerCursorT, _) = getTupleTypes eResT
+      let cursor    = ApType (Prim PrimNewCursor) $ innerCursorT
+      let callRes   = Ap e cursor
+      let callResT  = typeOfCoreExpression env callRes
       let cType     = typeOfCoreExpression env cursor
       let v'        = Variable i cType
-      let callRes   = Ap e $ cursor
-      let callResT  = typeOfCoreExpression env callRes
       let (tl, tr)  = getTupleTypes callResT
       let fst_ = Ap (ApType (ApType (Var $ idFromString "Prelude.fst") tl) tr) callRes
       return $ (v, fst_)
@@ -189,18 +194,22 @@ addCursorsToExpr env ty (Ap (Con x@(ConId _)) e) ts =
     i1 <- thId
     i2 <- thId
     iNeeds <- thId
-    let temp1 = (Prim PrimFinish `Ap` Var i2) `Ap` Var iNeeds
-    let temp2 = Prim PrimToEnd `Ap` Var i2
+    let cFin  = ApType (Prim PrimFinish) $ TCon $ typeConFromString "TreeTest.PACKED_Int"
+    let cEnd  = ApType (Prim PrimToEnd) $ TCon $ typeConFromString "TreeTest.PACKED_Int"
+    let temp1 = (cFin `Ap` Var i2) `Ap` Var iNeeds
+    let temp2 = cEnd `Ap` Var i2
     let e3  = Ap (Ap (ApType (ApType (Con (ConTuple 2)) (typeOfCoreExpression env temp1)) (typeOfCoreExpression env temp2)) temp1) temp2
-    let e2  = Ap (Ap (Prim PrimWrite) (Var i1)) e
-    let l2  = Let (NonRec (Bind (Variable i2 $ typeOfCoreExpression env e2) e2)) e3
-    let e1  = Ap (Prim $ PrimWriteCtor x) (Var iNeeds)
-    let l1  = Let (NonRec (Bind (Variable i1 $ typeOfCoreExpression env e1) e1)) l2
+    let e2  = Ap (Ap (ApType (ApType (ApType (Prim PrimWrite) $ TCon TConNil) $ TCon $ typeConFromString "TreeTest.PACKED_Int") $ TCon $ typeConFromString "Int") (Var i1)) e
+    let t2  = typeNormalizeHead env $ typeOfCoreExpression env e2
+    let l2  = Let (NonRec (Bind (Variable i2 t2) e2)) e3
+    let ctorType = typeOfCoreExpression env $ Con x
+    let e1  = Ap (ApType (Prim $ PrimWriteCtor x) $ typeList []) (Var iNeeds)
+    let t1  = typeNormalizeHead env $ typeOfCoreExpression env e1
+    let l1  = Let (NonRec (Bind (Variable i1 t1) e1)) l2
     let vNeeds  = Variable iNeeds
             $ toPackedIfIn ts
             $ functionResult
-            $ typeOfCoreExpression env
-            $ Con x
+            $ ctorType
     let lam   = Lam True vNeeds l1
     return lam
   where
@@ -281,11 +290,11 @@ useCursors (Prim p)           = Prim p -- This is what we want to create as well
 toNeedsCursor :: Type -> Type
 toNeedsCursor (TAp t1 t2) = typeApply t1  $ toNeedsCursor t2
 toNeedsCursor (TStrict t) = TStrict $ toNeedsCursor t
-toNeedsCursor (TCon t)    = TCon    $ tnc' t
+toNeedsCursor (TCon t)    = TCursor $ tnc' t
   where
     -- This is currently a helper function so we can use it for different types
     -- later. This might be inlined later, we'll see
-    tnc' t@(TConDataType id) = TConCursorNeeds [TCon t] (TCon t)
+    tnc' t@(TConDataType id) = TCursorNeeds (typeList [TCon t]) (TCon t)
 
 addHasCursor :: Type -> [Type] -> Type
 addHasCursor t ts | t `elem` ts = toHasCursor t
@@ -296,17 +305,17 @@ addHasCursor (TStrict t) ts = TStrict $ addHasCursor t ts
 addHasCursor (TCon t)    _  = TCon t
 
 toHasCursor :: Type -> Type
-toHasCursor (TAp t1 t2) = TAp t1 $ toHasCursor t2
+toHasCursor (TAp t1 t2) = TAp t1  $ toHasCursor t2
 toHasCursor (TStrict t) = TStrict $ toHasCursor t
-toHasCursor (TCon t)    = TCon $ thc' t
+toHasCursor (TCon t)    = TCursor $ thc' t
   where
-    thc' t@(TConDataType id) = TConCursorHas [TCon t]
+    thc' t@(TConDataType id) = TCursorHas $ typeList [TCon t]
 
 hasPackedOutput :: Type -> Maybe [Type]
 hasPackedOutput (TAp _ t2) = hasPackedOutput t2
 hasPackedOutput (TForall _ k t) = hasPackedOutput t -- TODO: Should we do anything with the kind?
 hasPackedOutput (TStrict t) = map TStrict <$> hasPackedOutput t
-hasPackedOutput (TVar x) = error "Should a ty var be assumed non-packed?"
+hasPackedOutput (TVar x) = Nothing
 hasPackedOutput t@(TCon tcon) = if hasPackedOutputTCon tcon then Just [t] else Nothing
 
 hasPackedOutputTCon :: TypeConstant -> Bool
@@ -321,6 +330,8 @@ usesPacked (TStrict t) = usesPacked t
 usesPacked (TVar x) = error "Should a ty var be assumed non-packed?"
 usesPacked (TCon tcon) = usesPackedTCon tcon
 
+-- This function is separate from `hasPackedOutputTCon` because the
+-- implementation of both might change, but the usage of both is different.
 usesPackedTCon :: TypeConstant -> Bool
 usesPackedTCon (TConDataType id) = let name = stringFromId id
   in "PACKED_" `isPrefixOf` (last . wordsWhen (=='.') $ name)
