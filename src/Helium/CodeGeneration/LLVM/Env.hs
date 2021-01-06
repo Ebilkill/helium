@@ -27,7 +27,9 @@ envForModule target mod = Env
   , envConstructors = mapFromList constructors
   , envMethodInfo = mapFromList methods
   -- Environment is only used for type synonyms
-  , envTypeEnv = Core.TypeEnvironment (mapFromList synonyms) emptyMap emptyMap
+  -- , envTypeEnv = Core.TypeEnvironment (mapFromList synonyms) emptyMap emptyMap
+  -- Environment now also needs to contain the constructors!
+  , envTypeEnv = Iridium.envWithSynonymsAndConstructors mod
   }
   where
     constructors = Iridium.moduleDataTypes mod >>=

@@ -289,11 +289,15 @@ typeOfPrimFunArity _ PrimWrite  = (,) 2 $
     [ TStrict $ TCursor (TCursorNeeds (TAp (TAp (TCon TConCons) (TVar 0)) $ TVar 2) $ TVar 1)
     , TStrict $ TVar 0
     ]
-    (TCursor (TCursorNeeds (TCon TConNil) $ TVar 1))
--- The WriteCtor case needs a better solution. This way, it can only write
--- ctors to cursors when the ctor requires at most one argument. That's not
--- acceptable!
+    (TCursor (TCursorNeeds (TVar 2) $ TVar 1))
 typeOfPrimFunArity env (PrimWriteCtor c) = generateWriteCtor $ typeOfCoreExpression env $ Con c
+typeOfPrimFunArity _ PrimWriteLength = (,) 1 $
+  TForall (Quantor Nothing) KStar $
+  TForall (Quantor Nothing) KStar $
+  typeFunction
+    [ TStrict $ TCursor (TCursorNeeds (TAp (TAp (TCon TConCons) (TCon TConWriteLength)) (TVar 0)) $ TVar 1)
+    ]
+    (TCursor (TCursorNeeds (TVar 0) $ TVar 1))
 typeOfPrimFunArity _ PrimToEnd = (,) 1 $
   TForall (Quantor Nothing) KStar $
   typeFunction
@@ -323,7 +327,8 @@ generateWriteCtor (TAp (TAp (TCon TConFun) a) b) =
 
     addToNeeds :: Type -> Type -> Type
     addToNeeds x (TCursor (TCursorNeeds ins out)) =
-      TCursor $ flip TCursorNeeds out $ TAp (TAp (TCon TConCons) x) ins
+      TCursor $ flip TCursorNeeds out $ typePrependList [x, TCon TConWriteLength] ins
+
 generateWriteCtor t = (,) 1 $
     TForall (Quantor Nothing) KStar $
     typeFunction [fullNeeds (TVar 0)] $ emptyNeeds (TVar 0)

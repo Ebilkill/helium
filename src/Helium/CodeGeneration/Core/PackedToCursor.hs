@@ -141,7 +141,7 @@ fixCursorCallsInBind env v e
     = do
       i <- thId
       let te        = typeOfCoreExpression env e
-      let (TAp (TAp (TCon TConFun) _) eResT) = te
+      let TypeFun _ eResT = te
       let (innerCursorT, _) = getTupleTypes eResT
       let cursor    = ApType (Prim PrimNewCursor) $ innerCursorT
       let callRes   = Ap e cursor
@@ -189,45 +189,63 @@ addCursorsToExpr env t (Let bs e) ts =
   do
     e' <- addCursorsToExpr env t e ts
     return $ Let bs e'
-addCursorsToExpr env ty (Ap (Con x@(ConId _)) e) ts =
+addCursorsToExpr env ty e@(Ap _ _) ts =
   do
-    i1 <- thId
-    i2 <- thId
     iNeeds <- thId
-    let cFin  = ApType (Prim PrimFinish) $ TCon $ typeConFromString "TreeTest.PACKED_Int"
-    let cEnd  = ApType (Prim PrimToEnd) $ TCon $ typeConFromString "TreeTest.PACKED_Int"
-    let temp1 = (cFin `Ap` Var i2) `Ap` Var iNeeds
-    let temp2 = cEnd `Ap` Var i2
-    let e3  = Ap (Ap (ApType (ApType (Con (ConTuple 2)) (typeOfCoreExpression env temp1)) (typeOfCoreExpression env temp2)) temp1) temp2
-    let e2  = Ap (Ap (ApType (ApType (ApType (Prim PrimWrite) $ TCon TConNil) $ TCon $ typeConFromString "TreeTest.PACKED_Int") $ TCon $ typeConFromString "Int") (Var i1)) e
-    let t2  = typeNormalizeHead env $ typeOfCoreExpression env e2
-    let l2  = Let (NonRec (Bind (Variable i2 t2) e2)) e3
-    let ctorType = typeOfCoreExpression env $ Con x
-    let e1  = Ap (ApType (Prim $ PrimWriteCtor x) $ typeList []) (Var iNeeds)
-    let t1  = typeNormalizeHead env $ typeOfCoreExpression env e1
-    let l1  = Let (NonRec (Bind (Variable i1 t1) e1)) l2
-    let vNeeds  = Variable iNeeds
-            $ toPackedIfIn ts
-            $ functionResult
-            $ ctorType
-    let lam   = Lam True vNeeds l1
-    return lam
+    x <- addCursorsToAp env ty e ts $ Var iNeeds
+    case x of
+      Nothing -> return e
+      Just (expr, ctorType) -> do
+        let vNeeds = Variable iNeeds $ toPackedIfIn ts $ ctorType
+        i1 <- thId
+        let cFin = ApType (Prim PrimFinish) ctorType
+        let cEnd = ApType (Prim PrimToEnd)  ctorType
+        let temp1 = (cFin `Ap` Var i1) `Ap` Var iNeeds
+        let temp2 = cEnd `Ap` Var i1
+        let e1 = (((Con (ConTuple 2) `ApType` typeOfCoreExpression env temp1) `ApType` typeOfCoreExpression env temp2) `Ap` temp1) `Ap` temp2
+        let t1 = typeNormalizeHead env $ typeOfCoreExpression env expr
+        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) e1
+        let lam = Lam True vNeeds l1
+        return lam
   where
     toPackedIfIn ts t
       | t `elem` ts = toNeedsCursor t
       | otherwise   = t
 addCursorsToExpr env ty expr ts = return . error . show $ pretty expr
-{-
-    ( foldr typeTransform (addHasCursor t ts) cursorTypes
-    , useCursors . fst $ foldr exprTransform (e, supply) cursorTypes
-    )
-  where
-    cursorTypes = map toNeedsCursor ts
-    typeTransform next old = TAp (TAp (TCon TConFun) next) old
-    exprTransform cTy (oldExp, supp) =
-      let (i, supp') = first (flip Variable cTy) (freshId supp)
-      in (Lam False i oldExp, supp')
--}
+
+-- The function expects the same arguments as addCursorsToExpr, plus the
+-- cursor. We need this cursor to keep track of the current expression to form
+-- said cursor.
+-- It returns Nothing when the application is not on a constructor; in this
+-- case, nothing is supposed to change in the original expression either. If
+-- the function returns Just, it returns a tuple of the current cursor building
+-- expression (i.e. it adds the current constructor application to the cursor
+-- argument, and returns that), and the resulting type of the cursor. The
+-- latter information is required by the intended call site of this function,
+-- `addCursorsToExpr`.
+addCursorsToAp :: TypeEnvironment -> Type -> Expr -> [Type] -> Expr -> TransformerHelper (Maybe (Expr, Type))
+addCursorsToAp env ty e@(Con x@(ConId _)) ts cursor =
+  do
+    let ctorType = typeOfCoreExpression env $ Con x
+    let ctorRes  = functionResult $ ctorType
+    let exprRes  = (ApType (Prim $ PrimWriteCtor x) $ typeList []) `Ap` cursor
+    return $ Just (exprRes, ctorRes)
+addCursorsToAp env ty e@(Ap fn arg) ts cursor =
+  do
+    x <- addCursorsToAp env ty fn ts cursor
+    case x of
+      Nothing -> return Nothing
+      -- The current cursor expression, and the resulting type of the cursor. The resulting type `t` is often used.
+      Just (cursor', t) -> do
+        let cursorType = typeOfCoreExpression env cursor'
+        let TCursor (TCursorNeeds cursorList _) = cursorType
+        let TypeCons firstArg firstList@(TypeCons (TCon TConWriteLength) restList) = cursorList
+        let write = ((Prim PrimWrite `ApType` firstList) `ApType` t) `ApType` firstArg
+        let writeLength = ((Prim PrimWriteLength `ApType` t) `ApType` restList)
+        let writtenCursor = (write `Ap` cursor') `Ap` arg
+        let lengthWrittenCursor = writeLength `Ap` writtenCursor
+        return $ Just (lengthWrittenCursor, t)
+addCursorsToAp _ _ _ _ cursor = return Nothing -- Not a constructor application, not a cursor.
 
 toCursorInDecls :: NameSupply -> [CoreDecl] -> [CoreDecl]
 toCursorInDecls supply = map (toCursorInDecl supply)
@@ -263,7 +281,7 @@ addNeedsCursors supply t e ts =
     )
   where
     cursorTypes = map toNeedsCursor ts
-    typeTransform next old = TAp (TAp (TCon TConFun) next) old
+    typeTransform next old = TypeFun next old
     exprTransform cTy (oldExp, supp) =
       let (i, supp') = first (flip Variable cTy) (freshId supp)
       in (Lam False i oldExp, supp')
