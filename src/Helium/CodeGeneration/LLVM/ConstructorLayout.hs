@@ -32,8 +32,8 @@ data ConstructorLayout
     { layoutStruct :: Struct
     }
 
-constructorLayout :: Target -> Iridium.DataType -> Int -> Iridium.DataTypeConstructor -> ConstructorLayout
-constructorLayout target (Iridium.DataType constructors) index (Iridium.DataTypeConstructor conId tp)
+constructorLayout :: Id -> Target -> Iridium.DataType -> Int -> Iridium.DataTypeConstructor -> ConstructorLayout
+constructorLayout name target (Iridium.DataType constructors) index (Iridium.DataTypeConstructor conId tp)
   | fields == [] = LayoutInline index
   | otherwise = LayoutPointer struct
   where

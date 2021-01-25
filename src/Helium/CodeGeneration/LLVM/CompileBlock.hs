@@ -285,8 +285,8 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restLi
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
   -- Cast [n x i32]* to i32*
-  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
-  , toName name := Call
+  --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  , nameIntermediate := Call
     { tailCallKind = Nothing
     , callingConvention = C
     , returnAttributes = []
@@ -299,10 +299,24 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restLi
     , functionAttributes = []
     , metadata = []
     }
+  , toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.reserveCursorSizes
+    , arguments =
+      [ (LocalReference cursorStructType nameIntermediate, [])
+      -- The 1 at the end of this ConstantOperand is the amount of sizes to reserve. Make sure to base this on the amount you need! TODO FIXME
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 1, [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
   ]
   where
     (namePtr, supply') = freshName supply
-    (nameArray, _) = freshName supply'
+    (nameArray, supply'') = freshName supply'
+    (nameIntermediate, _) = freshName supply''
     vectorType = IntegerType 8
     vector = Int 8 $ fromIntegral 0
 
@@ -314,31 +328,8 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
   -- Cast [n x i32]* to i32*
-  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
   -- The size starts in the first byte of the cursor
-  , cursorSizeIndexPtr := BitCast (toOperand env cursor) (pointer $ IntegerType 32) []
-  , cursorSizeIndex := Load False (LocalReference (pointer $ IntegerType 32) cursorSizeIndexPtr) Nothing (fromIntegral 1) []
-  -- Reserve space for the size
-  , x := Call
-    { tailCallKind = Nothing
-    , callingConvention = C
-    , returnAttributes = []
-    , function = Right $ Builtins.writeCursor
-    , arguments =
-      [ (toOperand env cursor, [])
-      -- The constant 4 here is the length of the int that keeps track of the
-      -- size of this element; for an integer, the value of this element would
-      -- be 8, so 4 bytes is overkill. However, for a really big tree, 4 bytes
-      -- mightn't be enough. This value is a constant, but we might change this
-      -- to be bigger at some point.
-      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 4, [])
-      , (LocalReference voidPointer nameArray, [])
-      ]
-    , functionAttributes = []
-    , metadata = []
-    }
-  , cursorSizeStartPtr := BitCast (toOperand env cursor) (pointer $ IntegerType 32) []
-  , cursorSizeStart := Load False (LocalReference (pointer $ IntegerType 32) cursorSizeStartPtr) Nothing (fromIntegral 1) []
   , toName name := Call
     { tailCallKind = Nothing
     , callingConvention = C
@@ -353,19 +344,6 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
       -- data types are covered by other writes.
       , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 8, [])
       , (LocalReference voidPointer nameArray, [])
-      ]
-    , functionAttributes = []
-    , metadata = []
-    }
-  , y := Call
-    { tailCallKind = Nothing
-    , callingConvention = C
-    , returnAttributes = []
-    , function = Right $ Builtins.writeCursorSize
-    , arguments =
-      [ (LocalReference (IntegerType 32) cursorSizeIndex, [])
-      , (LocalReference (IntegerType 32) cursorSizeStart, [])
-      , (toOperand env cursor, [])
       ]
     , functionAttributes = []
     , metadata = []
@@ -414,6 +392,21 @@ compileExpression env supply (Iridium.CallPrimFun PrimFinish [Left restList, Rig
     (namePtr, supply') = freshName supply
     (nameArray, _) = freshName supply'
     vectorType = IntegerType 64
+
+compileExpression env supply (Iridium.CallPrimFun PrimWriteLength [Left oldList, Left resType, Left restList, Right oldCursor, Right cursor]) name =
+  [ toName name := Call
+    { tailCallKind = Nothing
+    , callingConvention = C
+    , returnAttributes = []
+    , function = Right $ Builtins.writeCursorSize
+    , arguments =
+      [ (toOperand env oldCursor, [])
+      , (toOperand env cursor,    [])
+      ]
+    , functionAttributes = []
+    , metadata = []
+    }
+  ]
 
 compileExpression env supply e name = error $ "Cannot compile expression: " ++ show e ++ " with name " ++ show name
 {-

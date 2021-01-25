@@ -116,6 +116,7 @@ toStruct env target arity = Right $ Struct Nothing 0 0 fields
       : StructField Iridium.typeTrampoline Nothing -- functionpointer to trampoline
       : StructField Iridium.typeInt16 Nothing -- i16 remaining
       : StructField Iridium.typeInt16 Nothing -- i16 given
+      -- TODO make sure this doesn't only allocate normal values, but also cursors. This is only required after functions requiring cursors can be called via the trampolines!
       : replicate arity (StructField (Iridium.typeNotStrict $ Iridium.typeUnsafePtr) Nothing)
 
 operandTrue :: Operand

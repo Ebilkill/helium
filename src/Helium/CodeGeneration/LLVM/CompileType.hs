@@ -2,6 +2,7 @@ module Helium.CodeGeneration.LLVM.CompileType (compileType, typeSize, toOperand,
 
 import Lvm.Common.Id(Id, freshId, stringFromId, idFromString, NameSupply)
 import qualified Lvm.Core.Type as Core
+import qualified Helium.CodeGeneration.Core.TypeEnvironment as Core (isPackedType)
 import Helium.CodeGeneration.LLVM.Env (Env(..))
 import Helium.CodeGeneration.LLVM.ConstructorLayout
 import Helium.CodeGeneration.LLVM.Target
@@ -26,8 +27,9 @@ compileType env tp = case skipApp $ skipForallAndStrict $ Iridium.typeNormalizeH
     | name == idFromString "Int16" -> IntegerType 16
     | name == idFromString "Char" -> envValueType env
     | name == idFromString "$UnsafePtr" -> voidPointer
-    | name == idFromString "$Trampoline" -> pointer $ FunctionType voidPointer [thunkType, pointer taggedThunkPointer, IntegerType 16] False
+    | name == idFromString "$Trampoline" -> pointer $ FunctionType voidPointer [thunkType, voidPointer, IntegerType 16] False
     | otherwise -> voidPointer -- NamedTypeReference $ toNamePrefixed "$data_" name
+  Core.TCursor _ -> cursorStructType
   _ -> voidPointer
 
 typeSize :: Target -> Core.Type -> Int
@@ -133,6 +135,9 @@ cast supply env fromOperand toName fromType' toType'
               [0]
               []
             ]
+  -- cursor casts, use copy function
+  -- TODO check if this assertion is enough. Maybe we should check whether both are equal cursor types?
+  | Core.typeIsCursor toType = copy env fromOperand toName toType
   -- Strict to strict - perform bitcast
   | fromStrict && toStrict
     = cast' supply toName toType

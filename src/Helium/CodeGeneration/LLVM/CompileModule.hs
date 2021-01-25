@@ -47,4 +47,4 @@ typeDeclarations :: [Definition]
 typeDeclarations = 
   [ TypeDefinition (mkName "thunk") $ Just tp ]
   where
-    tp = StructureType False [IntegerType 64, thunkType, trampolineType, IntegerType 16, IntegerType 16, ArrayType 0 taggedThunkPointer]
+    tp = StructureType False [IntegerType 64, thunkType, trampolineType, IntegerType 16, IntegerType 16, ArrayType 0 (IntegerType 8)]

@@ -10,6 +10,7 @@
 
 module Helium.CodeGeneration.Core.TypeEnvironment where
 
+import Data.List (isPrefixOf)
 import Data.Maybe
 
 import Helium.Utils.Utils
@@ -69,7 +70,7 @@ patternVariables env (PatCon (ConId name) tps ids)
   where
     conType = typeApplyList (typeOfId env name) tps
     findVars :: [Id] -> Type -> [Variable]
-    findVars (x:xs) (TAp (TAp (TCon TConFun) tArg) tReturn)
+    findVars (x:xs) (TypeFun tArg tReturn)
       = Variable x tArg : findVars xs tReturn
     findVars [] _ = []
     findVars _ tp = internalError "Core.TypeEnvironment" "patternVariables" $ "Expected function type for constructor " ++ show name ++ ", got " ++ showType [] tp
@@ -105,12 +106,12 @@ typeNormalizeHead env = normalize False
 -- Appends the types of the function arguments (but not the return type) of the
 -- first type to the list that is the second type.
 typeAppendFunArgs :: TypeEnvironment -> Type -> Type -> Type
-typeAppendFunArgs env (TAp (TAp (TCon TConFun) t1) t2) xs = TAp (TAp (TCon TConCons) t1) $ typeAppendFunArgs env (typeNormalizeHead env t2) xs
+typeAppendFunArgs env (TypeFun t1 t2) xs = TypeFun t1 $ typeAppendFunArgs env (typeNormalizeHead env t2) xs
 typeAppendFunArgs env t@(TVar _) xs = TAp (TAp (TCon TConAppend) t) xs
 typeAppendFunArgs env _ xs = xs -- We have found a concrete return value, which we do not add.
 
 typeReturnType :: TypeEnvironment -> Type -> Type
-typeReturnType env (TAp (TAp (TCon TConFun) t1) t2) = typeReturnType env $ typeNormalizeHead env t2
+typeReturnType env (TypeFun t1 t2) = typeReturnType env $ typeNormalizeHead env t2
 typeReturnType _ x@(TVar _) = TCon TConReturnType `TAp` x
 typeReturnType _ x = x
 
@@ -137,7 +138,7 @@ typeOfCoreExpression env (Match name (Alt pattern expr : _))
 -- Expression: e1 e2
 -- Resolve the type of e1, which should be a function type.
 typeOfCoreExpression env e@(Ap e1 e2) = case typeNotStrict $ typeNormalizeHead env $ typeOfCoreExpression env e1 of
-  TAp (TAp (TCon TConFun) _) tReturn -> tReturn
+  TypeFun _ tReturn -> tReturn
   tp -> internalError "Core.TypeEnvironment" "typeOfCoreExpression" $ "expected a function type in the first argument of a function application, got " ++ showType [] tp ++ " in expression " ++ show (pretty e)
 
 -- Expression: e1 { tp1 }
@@ -234,7 +235,7 @@ extractFunctionTypeNoSynonyms :: Type -> FunctionType
 extractFunctionTypeNoSynonyms (TForall quantor _ tp) = FunctionType (Left quantor : args) ret
   where
     FunctionType args ret = extractFunctionTypeNoSynonyms tp
-extractFunctionTypeNoSynonyms (TAp (TAp (TCon TConFun) tArg) tReturn) = FunctionType (Right tArg : args) ret
+extractFunctionTypeNoSynonyms (TypeFun tArg tReturn) = FunctionType (Right tArg : args) ret
   where
     FunctionType args ret = extractFunctionTypeNoSynonyms tReturn
 extractFunctionTypeNoSynonyms tp = FunctionType [] tp
@@ -246,7 +247,7 @@ extractFunctionTypeWithArity env arity tp = case typeNormalizeHead env tp of
   TForall quantor _ tp' ->
     let FunctionType args ret = extractFunctionTypeWithArity env arity tp'
     in FunctionType (Left quantor : args) ret
-  TAp (TAp (TCon TConFun) tArg) tReturn ->
+  TypeFun tArg tReturn ->
     let FunctionType args ret = extractFunctionTypeWithArity env (arity - 1) tReturn
     in FunctionType (Right tArg : args) ret
   _ -> error ("extractFunctionTypeWithArity: expected function type or forall type, got " ++ showType [] tp)
@@ -256,13 +257,13 @@ updateFunctionTypeStrictness _ strictness tp
   | all not strictness = tp -- No arguments are strict, type does not change
 updateFunctionTypeStrictness env (strict : strictness) tp = case typeNormalizeHead env tp of
   TForall quantor kind tp' -> TForall quantor kind $ updateFunctionTypeStrictness env (strict : strictness) tp'
-  TAp (TAp (TCon TConFun) tArg) tReturn ->
+  TypeFun tArg tReturn ->
     let
       tArg'
         | strict = typeToStrict tArg
         | otherwise = tArg
     in
-      TAp (TAp (TCon TConFun) tArg')
+      TypeFun tArg'
         $ updateFunctionTypeStrictness env strictness tReturn
   _ -> error "updateFunctionTypeStrictness: expected function type"
 
@@ -286,16 +287,18 @@ typeOfPrimFunArity _ PrimWrite  = (,) 2 $
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
   typeFunction
-    [ TStrict $ TCursor (TCursorNeeds (TAp (TAp (TCon TConCons) (TVar 0)) $ TVar 2) $ TVar 1)
+    [ TStrict $ TCursor (TCursorNeeds (TypeCons (TVar 0) $ TVar 2) $ TVar 1)
     , TStrict $ TVar 0
     ]
     (TCursor (TCursorNeeds (TVar 2) $ TVar 1))
 typeOfPrimFunArity env (PrimWriteCtor c) = generateWriteCtor $ typeOfCoreExpression env $ Con c
-typeOfPrimFunArity _ PrimWriteLength = (,) 1 $
+typeOfPrimFunArity _ PrimWriteLength = (,) 2 $
+  TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
   typeFunction
-    [ TStrict $ TCursor (TCursorNeeds (TAp (TAp (TCon TConCons) (TCon TConWriteLength)) (TVar 0)) $ TVar 1)
+    [ TStrict $ TCursor (TCursorNeeds (TVar 2) $ TVar 1) -- The cursor BEFORE writing the new element. Could be of more precise type :thinking: TODO FIXME
+    , TStrict $ TCursor (TCursorNeeds (TypeCons (TCon TConWriteLength) (TVar 0)) $ TVar 1) -- The cursor AFTER writing the new element
     ]
     (TCursor (TCursorNeeds (TVar 0) $ TVar 1))
 typeOfPrimFunArity _ PrimToEnd = (,) 1 $
@@ -311,19 +314,19 @@ typeOfPrimFunArity _ PrimNewCursor = (,) 0 $
 typeOfPrimFun :: TypeEnvironment -> PrimFun -> Type
 typeOfPrimFun env = snd . typeOfPrimFunArity env
 
-generateWriteCtor (TAp (TAp (TCon TConFun) a) b) =
+generateWriteCtor (TypeFun a b) =
     let (arity, fun) = generateWriteCtor b
     in  (arity, growResultCursor a fun)
   where
     growResultCursor = go' 0
     go' :: Int -> Type -> Type -> Type
     go' n a (TForall q k t) = TForall q k $ go' (n + 1) a t
-    go' n a (TAp (TAp (TCon TConFun) cIn) cOut) = case a of
+    go' n a (TypeFun cIn cOut) = case a of
       TVar _ ->
         TForall (Quantor Nothing) KStar $
-        TAp (TAp (TCon TConFun) cIn) $ addToNeeds (TVar n) cOut
+        TypeFun cIn $ addToNeeds (TVar n) cOut
       x ->
-        TAp (TAp (TCon TConFun) cIn) $ addToNeeds x cOut
+        TypeFun cIn $ addToNeeds x cOut
 
     addToNeeds :: Type -> Type -> Type
     addToNeeds x (TCursor (TCursorNeeds ins out)) =
@@ -333,6 +336,20 @@ generateWriteCtor t = (,) 1 $
     TForall (Quantor Nothing) KStar $
     typeFunction [fullNeeds (TVar 0)] $ emptyNeeds (TVar 0)
   where
-    fullNeeds restList = TStrict $ TCursor $ TCursorNeeds ((TCon TConCons `TAp` t) `TAp` restList) t
+    fullNeeds restList = TStrict $ TCursor $ TCursorNeeds (TypeCons t restList) t
     emptyNeeds restList = TCursor $ TCursorNeeds restList t
+
+isPackedType :: Type -> Bool
+isPackedType (TStrict t) = isPackedType t
+isPackedType (TCon (TConDataType id)) = let name = stringFromId id
+  in "PACKED_" `isPrefixOf` (last . wordsWhen (=='.') $ name)
+isPackedType _ = False
+
+-- Taken from this stackoverflow answer:
+-- https://stackoverflow.com/a/4981265
+wordsWhen     :: (Char -> Bool) -> String -> [String]
+wordsWhen p s =  case dropWhile p s of
+                      "" -> []
+                      s' -> w : wordsWhen p s''
+                            where (w, s'') = break p s'
 

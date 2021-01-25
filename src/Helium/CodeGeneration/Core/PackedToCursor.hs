@@ -241,9 +241,9 @@ addCursorsToAp env ty e@(Ap fn arg) ts cursor =
         let TCursor (TCursorNeeds cursorList _) = cursorType
         let TypeCons firstArg firstList@(TypeCons (TCon TConWriteLength) restList) = cursorList
         let write = ((Prim PrimWrite `ApType` firstList) `ApType` t) `ApType` firstArg
-        let writeLength = ((Prim PrimWriteLength `ApType` t) `ApType` restList)
+        let writeLength = (((Prim PrimWriteLength `ApType` cursorList) `ApType` t) `ApType` restList)
         let writtenCursor = (write `Ap` cursor') `Ap` arg
-        let lengthWrittenCursor = writeLength `Ap` writtenCursor
+        let lengthWrittenCursor = (writeLength `Ap` cursor') `Ap` writtenCursor
         return $ Just (lengthWrittenCursor, t)
 addCursorsToAp _ _ _ _ cursor = return Nothing -- Not a constructor application, not a cursor.
 
@@ -333,33 +333,12 @@ hasPackedOutput :: Type -> Maybe [Type]
 hasPackedOutput (TAp _ t2) = hasPackedOutput t2
 hasPackedOutput (TForall _ k t) = hasPackedOutput t -- TODO: Should we do anything with the kind?
 hasPackedOutput (TStrict t) = map TStrict <$> hasPackedOutput t
-hasPackedOutput (TVar x) = Nothing
-hasPackedOutput t@(TCon tcon) = if hasPackedOutputTCon tcon then Just [t] else Nothing
-
-hasPackedOutputTCon :: TypeConstant -> Bool
-hasPackedOutputTCon (TConDataType id) = let name = stringFromId id
- in "PACKED_" `isPrefixOf` (last . wordsWhen (=='.') $ name)
-hasPackedOutputTCon _ = False
+hasPackedOutput t@(TCon tcon) = if isPackedType t then Just [t] else Nothing
 
 usesPacked :: Type -> Bool
 usesPacked (TAp t1 t2) = usesPacked t1 || usesPacked t2
 usesPacked (TForall _ k t) = usesPacked t -- TODO: Should we do anything with the kind?
 usesPacked (TStrict t) = usesPacked t
 usesPacked (TVar x) = error "Should a ty var be assumed non-packed?"
-usesPacked (TCon tcon) = usesPackedTCon tcon
-
--- This function is separate from `hasPackedOutputTCon` because the
--- implementation of both might change, but the usage of both is different.
-usesPackedTCon :: TypeConstant -> Bool
-usesPackedTCon (TConDataType id) = let name = stringFromId id
-  in "PACKED_" `isPrefixOf` (last . wordsWhen (=='.') $ name)
-usesPackedTCon _ = False
-
--- Taken from this stackoverflow answer:
--- https://stackoverflow.com/a/4981265
-wordsWhen     :: (Char -> Bool) -> String -> [String]
-wordsWhen p s =  case dropWhile p s of
-                      "" -> []
-                      s' -> w : wordsWhen p s''
-                            where (w, s'') = break p s'
+usesPacked t@(TCon _) = isPackedType t
 

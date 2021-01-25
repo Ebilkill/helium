@@ -37,13 +37,19 @@ getElementPtr address indices = AST.GetElementPtr False address operands []
     operands = map (ConstantOperand . Int 32 . fromIntegral) indices
 
 trampolineType :: Type
-trampolineType = pointer $ FunctionType voidPointer [thunkType, pointer taggedThunkPointer, IntegerType 16] False
+trampolineType = pointer $ FunctionType voidPointer [thunkType, voidPointer, IntegerType 16] False
 
 thunkType :: Type
 thunkType = pointer $ NamedTypeReference $ mkName "thunk"
 
 thunkStructType :: Type
 thunkStructType = NamedTypeReference $ mkName "thunk"
+
+cursorStructType :: Type
+cursorStructType = StructureType True [IntegerType 64, voidPointer, voidPointer]
+
+cursorType :: Type
+cursorType = pointer $ StructureType True [IntegerType 64, voidPointer, voidPointer]
 
 boolType :: Type
 boolType = IntegerType 1

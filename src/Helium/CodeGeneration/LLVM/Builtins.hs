@@ -1,7 +1,7 @@
 module Helium.CodeGeneration.LLVM.Builtins
   ( builtinDefinitions
   , eval, alloc, unpackString
-  , newCursor, freeCursor, writeCursor, finishCursor, memdumpCursor, writeCursorSize
+  , newCursor, freeCursor, writeCursor, finishCursor, memdumpCursor, writeCursorSize, reserveCursorSizes
   )
 where
 
@@ -21,7 +21,7 @@ data Builtin = Builtin Id [Type] Type
 builtin :: String -> [Type] -> Type -> Builtin
 builtin = Builtin . idFromString
 
-eval', alloc', memcpy', unpackString', newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor', writeCursorSize' :: Builtin
+eval', alloc', memcpy', unpackString', newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor', writeCursorSize', reserveCursorSizes' :: Builtin
 eval' = builtin "_$helium_runtime_eval" [voidPointer, IntegerType 64] voidPointer
 -- Alignment, size (number of bytes)
 alloc' = builtin "helium_global_alloc" [IntegerType 32] voidPointer
@@ -34,12 +34,13 @@ unpackString' = builtin "_$helium_runtime_unpack_string" [IntegerType 64, pointe
 -- voidPointer in the return type of the functions other than newCursor' (where
 -- they're actually 'void'), and the last argument to write_cursor (where it's
 -- actually 'void*').
-newCursor'        = builtin "helium_new_cursor"         [] voidPointer
-freeCursor'       = builtin "helium_free_cursor"        [voidPointer] voidPointer
-writeCursor'      = builtin "helium_write_cursor"       [voidPointer, IntegerType 64, voidPointer] voidPointer
-finishCursor'     = builtin "helium_finish_cursor"      [voidPointer, voidPointer] voidPointer
-memdumpCursor'    = builtin "helium_memdump_cursor"     [voidPointer] voidPointer
-writeCursorSize'  = builtin "helium_write_cursor_size"  [IntegerType 32, IntegerType 32, voidPointer] voidPointer
+newCursor'          = builtin "helium_new_cursor"           [] cursorStructType
+freeCursor'         = builtin "helium_free_cursor"          [cursorStructType] voidPointer
+writeCursor'        = builtin "helium_write_cursor"         [cursorStructType, IntegerType 64, voidPointer] cursorStructType
+finishCursor'       = builtin "helium_finish_cursor"        [cursorStructType, cursorStructType] voidPointer
+memdumpCursor'      = builtin "helium_memdump_cursor"       [cursorStructType] voidPointer
+writeCursorSize'    = builtin "helium_write_cursor_size"    [cursorStructType, cursorStructType] voidPointer
+reserveCursorSizes' = builtin "helium_reserve_cursor_sizes" [cursorStructType, IntegerType 32] cursorStructType
 
 builtins :: Iridium.Module -> [Builtin]
 builtins iridium = filter (\(Builtin name _ _) -> not $ Iridium.declaresFunction iridium name) allBuiltins
@@ -47,7 +48,7 @@ builtins iridium = filter (\(Builtin name _ _) -> not $ Iridium.declaresFunction
 allBuiltins :: [Builtin]
 allBuiltins =
   [ -- Cursor builtins:
-    newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor', writeCursorSize'
+    newCursor', freeCursor', writeCursor', finishCursor', memdumpCursor', writeCursorSize', reserveCursorSizes'
     -- Other builtins:
   , eval', alloc', memcpy', unpackString'
   ]
@@ -60,12 +61,13 @@ eval = operand eval'
 alloc = operand alloc'
 unpackString = operand unpackString'
 
-newCursor       = operand newCursor'
-freeCursor      = operand freeCursor'
-writeCursor     = operand writeCursor'
-finishCursor    = operand finishCursor'
-memdumpCursor   = operand memdumpCursor'
-writeCursorSize = operand writeCursorSize'
+newCursor           = operand newCursor'
+freeCursor          = operand freeCursor'
+writeCursor         = operand writeCursor'
+finishCursor        = operand finishCursor'
+memdumpCursor       = operand memdumpCursor'
+writeCursorSize     = operand writeCursorSize'
+reserveCursorSizes  = operand reserveCursorSizes'
 
 operand :: Builtin -> Operand
 operand (Builtin name args ret) = ConstantOperand $ GlobalReference (pointer t) $ toName name

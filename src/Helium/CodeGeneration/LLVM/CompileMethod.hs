@@ -119,7 +119,7 @@ toFunction env supply name visible annotations args fnType retType basicBlocks =
         , Global.parameters =
           (
             [ Parameter thunkType (mkName "thunk") []
-            , Parameter (pointer taggedThunkPointer) (mkName $ "ptr_" ++ show (arity - 1)) []
+            , Parameter voidPointer (mkName $ "ptr_" ++ show (arity - 1)) []
             , Parameter (IntegerType 16) (mkName $ "remaining_" ++ show (arity - 1)) []
             ]
           , {- varargs: -} False
@@ -137,7 +137,7 @@ toFunction env supply name visible annotations args fnType retType basicBlocks =
                 [ mkName "next_thunk_ptr" := getElementPtr (LocalReference thunkType $ mkName "thunk") [0, 1]
                 , mkName ("next_thunk_" ++ show (arity - 1)) := Load False (LocalReference (pointer thunkType) $ mkName "next_thunk_ptr") Nothing 0 []
                 ]
-                ++ (if arity /= 0 then trampolineExtractArguments (arity - 1) else [])
+                ++ (if arity /= 0 then trampolineExtractArguments (arity - 1) parameters else [])
                 ++ trampolineInstructions
               )
               trampolineTerminator
@@ -168,7 +168,7 @@ toFunction env supply name visible annotations args fnType retType basicBlocks =
                 , Constant.GlobalReference trampolineType $ toNamePrefixed "trampoline$" name -- function pointer
                 , Constant.Int 16 $ fromIntegral $ length args -- remaining: (length args) arguments remaining
                 , Constant.Int 16 0 -- given: 0 arguments given
-                , Constant.Array taggedThunkPointer []
+                , Constant.Array (IntegerType 8) []
                 ]
         , Global.section = Nothing
         , Global.comdat = Nothing
@@ -189,6 +189,7 @@ trampolineBody supply fn params fnType retType = foldr id call instrs
 
 trampolineCastArgument :: Int -> Iridium.Local -> (Iridium.Local, Iridium.Instruction -> Iridium.Instruction)
 trampolineCastArgument index (Iridium.Local _ tp)
+  | Core.typeIsCursor tp = (Iridium.Local nameThunk tp, id)
   | Core.typeIsStrict tp =
     let nameWhnf = idFromString $ "argument_whnf_" ++ show index
     in
@@ -209,13 +210,18 @@ trampolineCastArgument index (Iridium.Local _ tp)
 -- Output:
 -- %remaining_{i-1}, %ptr_{i-1}, %next_thunk_{i-1} - For the next iteration
 -- <{i8*, i1}> %{argument}
-trampolineExtractArguments :: Int -> [Named Instruction]
-trampolineExtractArguments 0 =
-  [ mkName "argument_0" := Load False (LocalReference (pointer taggedThunkPointer) $ mkName "ptr_0") Nothing 0 []
+trampolineExtractArguments :: Int -> [Parameter] -> [Named Instruction]
+trampolineExtractArguments 0 ps =
+  [ mkName "argument_0_tagged_thunk" := BitCast (LocalReference voidPointer $ mkName "ptr_0") (pointer ty) []
+  , mkName "argument_0" := Load False (LocalReference (pointer ty) $ mkName "argument_0_tagged_thunk") Nothing 0 []
   ]
-trampolineExtractArguments i =
+  where
+    Parameter ty' name meta = ps !! 0
+    ty = if ty' == cursorStructType then ty' else taggedThunkPointer
+trampolineExtractArguments i ps =
   -- argument_i = load ptr_i
-  [ name "argument" := Load False (LocalReference (pointer taggedThunkPointer) $ name "ptr") Nothing 0 []
+  [ name "argument_tagged_thunk" := BitCast (LocalReference voidPointer $ name "ptr") (pointer ty) []
+  , name "argument" := Load False (LocalReference (pointer ty) $ name "argument_tagged_thunk") Nothing 0 []
   -- Check whether this is the last element of the thunk object
   -- to_next_i = remaining_i == 1
   , name "to_next" := ICmp IntegerPredicate.EQ (LocalReference int16 $ name "remaining") (ConstantOperand $ Constant.Int 16 1) []
@@ -237,10 +243,10 @@ trampolineExtractArguments i =
   
   -- ptr_{i-1} = to_next_i ? {pointer to first argument of next_thunk} : &ptr_i[1]
   , name "next_thunk_first_arg" := getElementPtr (LocalReference thunkType $ name "next_thunk") [0, 5, 0]
-  , name "ptr_increment" := getElementPtr (LocalReference (pointer taggedThunkPointer) $ name "ptr") [1]
+  , name "ptr_increment" := getElementPtr (LocalReference voidPointer $ name "ptr") [tySize]
   , next "ptr" := Select operandToNext
-      (LocalReference (pointer taggedThunkPointer) $ name "next_thunk_first_arg")
-      (LocalReference (pointer taggedThunkPointer) $ name "ptr_increment")
+      (LocalReference voidPointer $ name "next_thunk_first_arg")
+      (LocalReference voidPointer $ name "ptr_increment")
       []
 
   -- next_thunk_{i-1} = to_next_i ? next_next_thunk[i] : next_thunk[i]
@@ -248,9 +254,12 @@ trampolineExtractArguments i =
       (LocalReference thunkType $ name "next_next_thunk")
       (LocalReference thunkType $ name "next_thunk")
       []
-  ] ++ trampolineExtractArguments (i - 1)
+  ] ++ trampolineExtractArguments (i - 1) ps
   where
     operandToNext = LocalReference boolType $ name "to_next"
     name str = mkName (str ++ "_" ++ show i)
     next str = mkName (str ++ "_" ++ show (i - 1))
     int16 = IntegerType 16
+    Parameter ty' _ meta = ps !! i
+    -- TODO the sizes of these types assume that a pointer is 64 bits, and that an i1 takes up a whole byte
+    (ty, tySize) = if ty' == cursorStructType then (ty', 24) else (taggedThunkPointer, 9)
