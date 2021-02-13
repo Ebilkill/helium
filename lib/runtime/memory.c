@@ -82,60 +82,46 @@ void trace_thunk_done(struct Thunk* thunk) {
   printf("Evaluated thunk %ld, value = %ld\n", (long) thunk, (long) thunk->fn);
 }
 
+// This is a linked list, used as a stack, which contains the indices where the
+// size of something in a cursor has to be written. It is actually a linked
+// list of integers, though.
+struct SizeIndices {
+  int64_t index;
+  struct SizeIndices* next_element;
+};
+
 struct Cursor {
   int64_t current_index;
   void* data;
+  struct SizeIndices* size_indices;
 };
 
 struct ReadCursor {
-  int64_t end_index;
+  int64_t end_index; // Vooral nuttig voor debugging, verder eigenlijk niet
   int64_t current_index;
-  void* data;
+  void* data; // Enige wat nodig is? Ivo zegt alleen dit is makkelijker
 };
 
-void helium_memdump_cursor(struct Cursor* cursor) {
-  printf("Cursor of size %lli with data:\n", cursor->current_index);
+void helium_memdump_cursor(struct Cursor cursor);
 
-  for (int64_t i = 0; i < cursor->current_index; ++i) {
-    printf("%i ", ((char*)cursor->data)[i]);
-  }
-
-  printf("\n");
-}
-
-struct Cursor* helium_new_cursor() {
-  struct Cursor* ret_val = (struct Cursor*)malloc(sizeof(struct Cursor));
-  ret_val->current_index = 0;
-  ret_val->data = malloc(1024 * 256);
-
-  printf("Made a thing!\n");
-  return ret_val;
-}
+struct Cursor helium_new_cursor();
 
 // Does NOT free the pointer to the cursor itself. Only prepares the cursor to
 // be freed, i.e. removes its inner data!
 // Assumes that the cursor has been initialized before!
 // 
 // This function should be called when the cursor gets GC'ed.
-void helium_free_cursor(struct Cursor* cursor) {
-  cursor->current_index = 0;
-  free(cursor->data);
-  cursor->data = NULL;
+// TODO make sure that the data pointer is reference counted. We will use this
+// one data pointer in multiple cursors.
+void helium_free_cursor(struct Cursor cursor) {
+  cursor.current_index = 0;
+  free(cursor.data);
+  cursor.data = NULL;
 
   printf("Freed a thing!\n");
 }
 
-struct Cursor* helium_write_cursor_at(struct Cursor* cursor, int64_t size, int64_t at, void* data) {
-  for (int64_t i = 0; i < size; ++i) {
-    int64_t write_index = at + i;
-    // printf("Write index: %lli", write_index);
-    char data_point = ((char*) data)[i];
-    // printf(", Data point: %i\n", data_point);
-    ((char*) cursor->data)[write_index] = data_point;
-  }
-
-  return cursor;
-}
+__attribute__((fastcall)) struct Cursor helium_write_cursor_at(struct Cursor cursor, int64_t size, int64_t at, void* data);
 
 // Writes `size` bytes from `data` into `cursor`. Updates the current_index
 // value of the cursor as well.
@@ -143,17 +129,7 @@ struct Cursor* helium_write_cursor_at(struct Cursor* cursor, int64_t size, int64
 // function is assumed to be the new cursor to write into. We just return this
 // cursor for now, but we might check to see if this behaviour should be
 // changed instead.
-struct Cursor* helium_write_cursor(struct Cursor* cursor, int64_t size, void* data) {
-  helium_write_cursor_at(cursor, size, cursor->current_index, data);
-  cursor->current_index += size;
-
-  // printf("Wrote a thing of length: %lli!\n", size);
-  // printf("First byte: %i\n", ((char*)data)[0]);
-  // helium_memdump_cursor(cursor);
-
-  printf("Wrote a thing!\n");
-  return cursor;
-}
+__attribute__((fastcall)) struct Cursor helium_write_cursor(struct Cursor cursor, int64_t size, void* data);
 
 // Writes the size of what has been written into the place where the size is
 // supposed to be. The size needs to have space allocated before the object for
@@ -168,16 +144,19 @@ struct Cursor* helium_write_cursor(struct Cursor* cursor, int64_t size, void* da
 // size. The second parameter is where the size needs to be calculated from, so
 // where the field _starts_. The cursor knows where the field _ends_, so the
 // second and third parameter together allow to calculate the size.
-struct Cursor* helium_write_cursor_size(int size_index, int size_start, struct Cursor* cursor) {
-  int size = cursor->current_index - size_start;
-  printf("Writing size: %i\n", size);
-  return helium_write_cursor_at(cursor, sizeof(size), size_index, (void*)&size);
-}
+struct Cursor helium_write_cursor_size(struct Cursor oldCursor, struct Cursor cursor);
+
+// Reserves a certain amount of spaces for element sizes in the cursor, and
+// keeps track of the places in which to write the next sizes. Makes sure that
+// the order in which sizes are written is the same order in which the
+// corresponding elements are written.
+
+// This code might be prettier if I implement push/pop operations on the linked list...
+// TODO
+struct Cursor helium_reserve_cursor_sizes(struct Cursor cursor, int64_t size_count);
 
 // Are these cursors the same cursor?
 // TODO make sure that these cursors exist lmaooo
-struct ReadCursor* helium_finish_cursor(struct Cursor* cursor_start, struct Cursor* cursor_end) {
-  helium_memdump_cursor(cursor_start);
-  return NULL;
-}
+struct ReadCursor* helium_finish_cursor(struct Cursor cursor_start, struct Cursor cursor_end);
+
 
