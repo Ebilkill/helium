@@ -39,8 +39,8 @@ freeCursor'         = builtin "helium_free_cursor"          [cursorStructType] v
 writeCursor'        = builtin "helium_write_cursor"         [cursorStructType, IntegerType 64, voidPointer] cursorStructType
 finishCursor'       = builtin "helium_finish_cursor"        [cursorStructType, cursorStructType] voidPointer
 memdumpCursor'      = builtin "helium_memdump_cursor"       [cursorStructType] voidPointer
-writeCursorSize'    = builtin "helium_write_cursor_size"    [cursorStructType, cursorStructType] voidPointer
-reserveCursorSizes' = builtin "helium_reserve_cursor_sizes" [cursorStructType, IntegerType 32] cursorStructType
+writeCursorSize'    = builtin "helium_write_cursor_size"    [cursorStructType, cursorStructType] cursorStructType
+reserveCursorSizes' = builtin "helium_reserve_cursor_sizes" [cursorStructType, IntegerType 64] cursorStructType
 
 builtins :: Iridium.Module -> [Builtin]
 builtins iridium = filter (\(Builtin name _ _) -> not $ Iridium.declaresFunction iridium name) allBuiltins

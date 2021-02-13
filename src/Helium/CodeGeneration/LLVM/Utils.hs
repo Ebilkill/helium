@@ -46,7 +46,7 @@ thunkStructType :: Type
 thunkStructType = NamedTypeReference $ mkName "thunk"
 
 cursorStructType :: Type
-cursorStructType = StructureType True [IntegerType 64, voidPointer, voidPointer]
+cursorStructType = StructureType False [IntegerType 64, voidPointer, voidPointer]
 
 cursorType :: Type
 cursorType = pointer $ StructureType True [IntegerType 64, voidPointer, voidPointer]

@@ -1,6 +1,13 @@
-module Helium.CodeGeneration.LLVM.CompileConstructor (dataTypeType, constructorType, compileExtractFields) where
+module Helium.CodeGeneration.LLVM.CompileConstructor
+  ( dataTypeType
+  , constructorType
+  , compileExtractFields
+  , compileExtractCursorFields
+  )
+where
 
 import qualified Data.Bits as Bits
+import Data.Maybe (fromJust)
 import Data.Word(Word32)
 
 import Lvm.Common.Id(Id, NameSupply, mapWithSupply, splitNameSupply)
@@ -46,3 +53,19 @@ compileExtractFields env supply reference struct vars
 compileExtractField :: Env -> Operand -> Struct -> NameSupply -> (StructField, Maybe Id, Int) -> [Named Instruction]
 compileExtractField env reference struct supply (field, Just name, index) = extractField supply env reference struct index field $ toName name
 compileExtractField _ _ _ _ (_, Nothing, _) = []
+
+compileExtractCursorFields :: Env -> NameSupply -> Operand -> Struct -> [Maybe Id] -> [Named Instruction]
+-- TODO hardcoded for a single field of type i64!
+compileExtractCursorFields env supply reference struct vars =
+    [ fieldIndexPtr := BitCast reference (pointer $ IntegerType 64) []
+    , fieldIndex    := Load False (LocalReference (pointer $ IntegerType 64) fieldIndexPtr) Nothing 0 []
+    , fieldPtr      := GetElementPtr False reference [LocalReference (IntegerType 64) fieldIndex] []
+    , resPtr        := BitCast (LocalReference voidPointer fieldPtr) (pointer $ IntegerType 64) []
+    , resName       := Load False (LocalReference (pointer $ IntegerType 64) resPtr) Nothing 0 []
+    ]
+  where
+    (fieldIndexPtr, supply1) = freshName supply
+    (fieldIndex,    supply2) = freshName supply1
+    (fieldPtr,      supply3) = freshName supply2
+    (resPtr,        supply4) = freshName supply3
+    resName = toName . fromJust $ vars !! 0

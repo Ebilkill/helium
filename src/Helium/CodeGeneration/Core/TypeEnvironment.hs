@@ -311,9 +311,6 @@ typeOfPrimFunArity _ PrimNewCursor = (,) 0 $
   TForall (Quantor Nothing) KStar $
   TCursor $ TCursorNeeds (typeList [TVar 0]) $ TVar 0
 
-typeOfPrimFun :: TypeEnvironment -> PrimFun -> Type
-typeOfPrimFun env = snd . typeOfPrimFunArity env
-
 generateWriteCtor (TypeFun a b) =
     let (arity, fun) = generateWriteCtor b
     in  (arity, growResultCursor a fun)
@@ -338,6 +335,9 @@ generateWriteCtor t = (,) 1 $
   where
     fullNeeds restList = TStrict $ TCursor $ TCursorNeeds (TypeCons t restList) t
     emptyNeeds restList = TCursor $ TCursorNeeds restList t
+
+typeOfPrimFun :: TypeEnvironment -> PrimFun -> Type
+typeOfPrimFun env = snd . typeOfPrimFunArity env
 
 isPackedType :: Type -> Bool
 isPackedType (TStrict t) = isPackedType t

@@ -12,13 +12,15 @@ import Data.String(fromString)
 import Data.Word(Word32)
 import Data.Either
 
+import Debug.Trace
+
 import Helium.CodeGeneration.LLVM.Env
 import Helium.CodeGeneration.LLVM.Target
 import Helium.CodeGeneration.LLVM.Utils
 import Helium.CodeGeneration.LLVM.CompileType
 import Helium.CodeGeneration.LLVM.CompileBind
 import Helium.CodeGeneration.LLVM.ConstructorLayout
-import Helium.CodeGeneration.LLVM.CompileConstructor(compileExtractFields)
+import Helium.CodeGeneration.LLVM.CompileConstructor(compileExtractFields, compileExtractCursorFields)
 import Helium.CodeGeneration.LLVM.Struct(tagValue, tupleStruct)
 import Helium.CodeGeneration.LLVM.CompileStruct
 import qualified Helium.CodeGeneration.LLVM.Builtins as Builtins
@@ -28,7 +30,7 @@ import Lvm.Common.IdMap(findMap)
 import qualified Lvm.Core.Type as Core
 import Lvm.Core.Expr (PrimFun(..))
 
-import Helium.CodeGeneration.Core.TypeEnvironment (typeOfPrimFun, typeOfPrimFunArity)
+import Helium.CodeGeneration.Core.TypeEnvironment (typeOfPrimFun, typeOfPrimFunArity, isPackedType)
 
 import qualified Helium.CodeGeneration.Iridium.Data as Iridium
 import qualified Helium.CodeGeneration.Iridium.Type as Iridium
@@ -69,19 +71,40 @@ compileInstruction env supply (Iridium.Return var) = Partial [] (Do $ Ret (Just 
 -- A Match has undefined behaviour if it does not match, so we do not need to check whether it actually matches.
 compileInstruction env supply (Iridium.Match var _ _ [] next) = compileInstruction env supply next
 compileInstruction env supply (Iridium.Match var target _ args next)
-  = [ addressName := AST.BitCast (toOperand env var) (pointer t) []
-    ]
-    +> compileExtractFields env supply'' address struct args
-    +> compileInstruction env supply''' next
-  where
-    t = structType env struct
-    (addressName, supply') = freshName supply
-    address = LocalReference (pointer t) addressName
-    (supply'', supply''') = splitNameSupply supply'
-    LayoutPointer struct = case target of
-      Iridium.MatchTargetConstructor (Iridium.DataTypeConstructor conId _) -> findMap conId (envConstructors env)
-      Iridium.MatchTargetTuple arity -> LayoutPointer $ tupleStruct arity
+  | isPackedType (Iridium.variableType var)
+    = -- bitcast to a void* (just in case we aren't a void* already) and go to the next element
+      -- Going to the next element is important to skip the constructor tag (which is for case,
+      -- not for match), and we can't easily fix this from the case itself.
+      [ cursorTagName   := AST.BitCast (toOperand env var) voidPointer []
+      , cursorStartName := getElementPtr (LocalReference voidPointer cursorTagName) [1]
+      ]
+      -- extract the fields
+      +> compileExtractCursorFields env supply3 (LocalReference voidPointer cursorStartName) struct args
+      -- compile whatever is next
+      +> compileInstruction env supply4 next
+  | otherwise
+    = [ addressName := AST.BitCast (toOperand env var) (pointer t) []
+      ]
+      +> compileExtractFields env supply'' address struct args
+      +> compileInstruction env supply''' next
+    where
+      -- isPackedType
+      (cursorTagName,   supply1)  = freshName supply
+      (cursorStartName, supply2)  = freshName supply1
+      (supply3, supply4) = splitNameSupply supply2
+      -- otherwise; we might want to merge this somehow but the name clashes would be... strange?
+      t = structType env struct
+      (addressName, supply') = freshName supply
+      address = LocalReference (pointer t) addressName
+      (supply'', supply''') = splitNameSupply supply'
+      LayoutPointer struct = case target of
+        Iridium.MatchTargetConstructor (Iridium.DataTypeConstructor conId _) -> findMap conId (envConstructors env)
+        Iridium.MatchTargetTuple arity -> LayoutPointer $ tupleStruct arity
 compileInstruction env supply (Iridium.Case var (Iridium.CaseConstructor alts))
+  -- The variable is a packed (cursor) type
+  | isPackedType (Iridium.variableType var) =
+    let (instr, terminator) = compileCaseConstructorCursor env supply var alts'
+    in  Partial instr terminator []
   -- All constructors are pointers
   | null inlines =
     let (instr, terminator) = compileCaseConstructorPointer env supply var pointers
@@ -284,7 +307,6 @@ compileExpression env supply expr@(Iridium.CallPrimFun PrimNewCursor args) name 
 compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restList, Right cursor]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
-  -- Cast [n x i32]* to i32*
   --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
   , nameIntermediate := Call
     { tailCallKind = Nothing
@@ -294,7 +316,7 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restLi
     , arguments =
       [ (toOperand env cursor, [])
       , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 1, [])
-      , (LocalReference voidPointer nameArray, [])
+      , (LocalReference voidPointer namePtr, [])
       ]
     , functionAttributes = []
     , metadata = []
@@ -327,8 +349,8 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
   -- this should be true?
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
-  -- Cast [n x i32]* to i32*
-  --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+  -- Cast i64* to i8*, i.e. the int pointer into a void pointer
+  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
   -- The size starts in the first byte of the cursor
   , toName name := Call
     { tailCallKind = Nothing
@@ -488,6 +510,29 @@ compileCaseConstructorPointer env supply var alts = (instructions, (Do switch))
 
     switch :: Terminator
     switch = Switch (LocalReference (envValueType env) nameTag) (toName defaultBranch) (map altToDestination alts) []
+
+compileCaseConstructorCursor :: Env -> NameSupply -> Iridium.Variable -> [CaseAlt] -> ([Named Instruction], Named Terminator)
+compileCaseConstructorCursor env supply var alts = (instructions, (Do switch))
+  where
+    (defaultBranch, alts') = caseExtractMostFrequentBranch alts
+
+    (nameTagPtr, supply1) = freshName supply
+    (nameTag,    supply2) = freshName supply1
+    (nameTag64,  supply3) = freshName supply2
+
+    instructions :: [Named Instruction]
+    instructions =
+      [ nameTagPtr := getElementPtr (toOperand env var) [0]
+      , nameTag    := Load False (LocalReference voidPointer nameTagPtr) Nothing 0 []
+      , nameTag64  := ZExt (LocalReference (IntegerType 8) nameTag) (IntegerType 64) []
+      ]
+
+    altToDestination :: CaseAlt -> (Constant, Name)
+    altToDestination (CaseAlt (Iridium.DataTypeConstructor conId _) (LayoutPointer struct) to)
+      = (Int (fromIntegral $ targetWordSize $ envTarget env) (fromIntegral $ tagValue struct), toName to)
+
+    switch :: Terminator
+    switch = Switch (LocalReference (envValueType env) nameTag64) (toName defaultBranch) (map altToDestination alts) []
 
 caseExtractMostFrequentBranch :: [CaseAlt] -> (Iridium.BlockName, [CaseAlt])
 caseExtractMostFrequentBranch alts = (defaultBranch, alts')
