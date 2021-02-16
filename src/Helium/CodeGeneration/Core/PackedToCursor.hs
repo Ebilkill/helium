@@ -142,7 +142,8 @@ fixCursorCallsInBind env v e
       i <- thId
       let te        = typeOfCoreExpression env e
       let TypeFun _ eResT = te
-      let (innerCursorT, _) = getTupleTypes eResT
+      --let (innerCursorT, _) = getTupleTypes eResT
+      let innerCursorT = eResT
       let cursor    = ApType (Prim PrimNewCursor) $ innerCursorT
       let callRes   = Ap e cursor
       let callResT  = typeOfCoreExpression env callRes
@@ -150,7 +151,7 @@ fixCursorCallsInBind env v e
       let v'        = Variable i cType
       let (tl, tr)  = getTupleTypes callResT
       let fst_ = Ap (ApType (ApType (Var $ idFromString "Prelude.fst") tl) tr) callRes
-      return $ (v, fst_)
+      return $ (v, callRes)
 
 -- Crashes if you don't actually give a tuple type!
 getTupleTypes :: Type -> (Type, Type)
@@ -177,7 +178,8 @@ cursorfyExpr env t e = cursorfy' t e
 
 functionResult :: Type -> Type
 --functionResult x | trace (show $ pretty x) False = undefined
-functionResult (TAp _ x) = x
+functionResult (TypeFun _ x) = functionResult x
+functionResult (TAp _ x) = functionResult x
 functionResult x = x
 
 addCursorsToExpr :: TypeEnvironment -> Type -> Expr -> [Type] -> TransformerHelper Expr
@@ -204,7 +206,7 @@ addCursorsToExpr env ty e@(Ap _ _) ts =
         let temp2 = cEnd `Ap` Var i1
         let e1 = (((Con (ConTuple 2) `ApType` typeOfCoreExpression env temp1) `ApType` typeOfCoreExpression env temp2) `Ap` temp1) `Ap` temp2
         let t1 = typeNormalizeHead env $ typeOfCoreExpression env expr
-        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) e1
+        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) temp1
         let lam = Lam True vNeeds l1
         return lam
   where
@@ -227,9 +229,9 @@ addCursorsToAp :: TypeEnvironment -> Type -> Expr -> [Type] -> Expr -> Transform
 addCursorsToAp env ty e@(Con x@(ConId _)) ts cursor =
   do
     let ctorType = typeOfCoreExpression env $ Con x
-    let ctorRes  = functionResult $ ctorType
+    let ctorResT = functionResult $ ctorType
     let exprRes  = (ApType (Prim $ PrimWriteCtor x) $ typeList []) `Ap` cursor
-    return $ Just (exprRes, ctorRes)
+    return $ Just (exprRes, ctorResT)
 addCursorsToAp env ty e@(Ap fn arg) ts cursor =
   do
     x <- addCursorsToAp env ty fn ts cursor
@@ -237,14 +239,17 @@ addCursorsToAp env ty e@(Ap fn arg) ts cursor =
       Nothing -> return Nothing
       -- The current cursor expression, and the resulting type of the cursor. The resulting type `t` is often used.
       Just (cursor', t) -> do
+        cursorId <- thId
+        let cursorVar = Variable cursorId $ typeNormalizeHead env $ typeOfCoreExpression env cursor'
         let cursorType = typeOfCoreExpression env cursor'
         let TCursor (TCursorNeeds cursorList _) = cursorType
         let TypeCons firstArg firstList@(TypeCons (TCon TConWriteLength) restList) = cursorList
         let write = ((Prim PrimWrite `ApType` firstList) `ApType` t) `ApType` firstArg
         let writeLength = (((Prim PrimWriteLength `ApType` cursorList) `ApType` t) `ApType` restList)
-        let writtenCursor = (write `Ap` cursor') `Ap` arg
-        let lengthWrittenCursor = (writeLength `Ap` cursor') `Ap` writtenCursor
-        return $ Just (lengthWrittenCursor, t)
+        let writtenCursor = (write `Ap` Var cursorId) `Ap` arg
+        let lengthWrittenCursor = (writeLength `Ap` Var cursorId) `Ap` writtenCursor
+        let resExpr = Let (NonRec $ Bind cursorVar cursor') lengthWrittenCursor
+        return $ trace (show . pretty $ t) $ Just (resExpr, t)
 addCursorsToAp _ _ _ _ cursor = return Nothing -- Not a constructor application, not a cursor.
 
 toCursorInDecls :: NameSupply -> [CoreDecl] -> [CoreDecl]
@@ -330,6 +335,7 @@ toHasCursor (TCon t)    = TCursor $ thc' t
     thc' t@(TConDataType id) = TCursorHas $ typeList [TCon t]
 
 hasPackedOutput :: Type -> Maybe [Type]
+hasPackedOutput (TVar _)   = trace ("TVar in `hasPackedOutput`. Assuming non-packed, but need to verify whether this is correct!") $ Nothing
 hasPackedOutput (TAp _ t2) = hasPackedOutput t2
 hasPackedOutput (TForall _ k t) = hasPackedOutput t -- TODO: Should we do anything with the kind?
 hasPackedOutput (TStrict t) = map TStrict <$> hasPackedOutput t
