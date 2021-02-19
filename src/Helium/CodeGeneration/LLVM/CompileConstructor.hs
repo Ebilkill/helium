@@ -7,7 +7,6 @@ module Helium.CodeGeneration.LLVM.CompileConstructor
 where
 
 import qualified Data.Bits as Bits
-import Data.Maybe (fromJust)
 import Data.Word(Word32)
 
 import Lvm.Common.Id(Id, NameSupply, mapWithSupply, splitNameSupply)
@@ -56,16 +55,29 @@ compileExtractField _ _ _ _ (_, Nothing, _) = []
 
 compileExtractCursorFields :: Env -> NameSupply -> Operand -> Struct -> [Maybe Id] -> [Named Instruction]
 -- TODO hardcoded for a single field of type i64!
-compileExtractCursorFields env supply reference struct vars =
-    [ fieldIndexPtr := BitCast reference (pointer $ IntegerType 64) []
-    , fieldIndex    := Load False (LocalReference (pointer $ IntegerType 64) fieldIndexPtr) Nothing 0 []
-    , fieldPtr      := GetElementPtr False reference [LocalReference (IntegerType 64) fieldIndex] []
-    , resPtr        := BitCast (LocalReference voidPointer fieldPtr) (pointer $ IntegerType 64) []
-    , resName       := Load False (LocalReference (pointer $ IntegerType 64) resPtr) Nothing 0 []
+compileExtractCursorFields env supply reference struct [] = [] -- Done all vars
+compileExtractCursorFields env supply reference struct (v : vars) =
+    varInsns ++
+    [ nextVar       := getElementPtr reference [8]
     ]
+    ++ compileExtractCursorFields env supply5 nextRef struct vars
   where
-    (fieldIndexPtr, supply1) = freshName supply
-    (fieldIndex,    supply2) = freshName supply1
-    (fieldPtr,      supply3) = freshName supply2
-    (resPtr,        supply4) = freshName supply3
-    resName = toName . fromJust $ vars !! 0
+    (fieldIndexPtr, supply1)  = freshName supply
+    (fieldIndex,    supply2)  = freshName supply1
+    (fieldPtr,      supply3)  = freshName supply2
+    (resPtr,        supply4)  = freshName supply3
+    (nextVar,       supply5)  = freshName supply4
+    nextRef                   = LocalReference voidPointer nextVar
+    -- The instructions needed to read this variable from the cursor. If the
+    -- variable is Nothing, we assume we don't need to read it (since it is not
+    -- used).
+    varInsns = case v of
+      Nothing   -> []
+      Just var  ->
+        let resName = toName var
+        in  [ fieldIndexPtr := BitCast reference (pointer $ IntegerType 64) []
+            , fieldIndex    := Load False (LocalReference (pointer $ IntegerType 64) fieldIndexPtr) Nothing 0 []
+            , fieldPtr      := GetElementPtr False reference [LocalReference (IntegerType 64) fieldIndex] []
+            , resPtr        := BitCast (LocalReference voidPointer fieldPtr) (pointer $ IntegerType 64) []
+            , resName       := Load False (LocalReference (pointer $ IntegerType 64) resPtr) Nothing 0 []
+            ]
