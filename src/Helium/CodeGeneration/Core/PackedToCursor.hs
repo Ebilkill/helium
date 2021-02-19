@@ -198,21 +198,35 @@ addCursorsToExpr env ty e@(Ap _ _) ts =
     case x of
       Nothing -> return e
       Just (expr, ctorType) -> do
+        -- TODO: Maybe it's a bit late to check whether we need to change the
+        -- type after we change the expression...
         let vNeeds = Variable iNeeds $ toPackedIfIn ts $ ctorType
         i1 <- thId
         let cFin = ApType (Prim PrimFinish) ctorType
-        let cEnd = ApType (Prim PrimToEnd)  ctorType
-        let temp1 = (cFin `Ap` Var i1) `Ap` Var iNeeds
-        let temp2 = cEnd `Ap` Var i1
-        let e1 = (((Con (ConTuple 2) `ApType` typeOfCoreExpression env temp1) `ApType` typeOfCoreExpression env temp2) `Ap` temp1) `Ap` temp2
+        let temp = (cFin `Ap` Var i1) `Ap` Var iNeeds
         let t1 = typeNormalizeHead env $ typeOfCoreExpression env expr
-        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) temp1
+        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) temp
         let lam = Lam True vNeeds l1
         return lam
   where
     toPackedIfIn ts t
       | t `elem` ts = toNeedsCursor t
       | otherwise   = t
+addCursorsToExpr env ty e@(Con c@(ConId x)) ts =
+  do
+    iNeeds <- thId
+    -- This pattern always matches, since we know `e` is a `Con (ConId _)`
+    -- We need an irrefutable pattern just so that the compiler doesn't
+    -- complain about any MonadFail stuff
+    ~(Just (cursor, ctorType)) <- addCursorsToAp env ty e ts $ Var iNeeds
+    let vNeeds = Variable iNeeds $ toNeedsCursor ctorType
+    i1 <- thId
+    let cFin = ApType (Prim PrimFinish) ctorType
+    let temp = (cFin `Ap` Var i1) `Ap` Var iNeeds
+    let t1 = typeNormalizeHead env $ typeOfCoreExpression env cursor
+    let l1 = Let (NonRec (Bind (Variable i1 t1) cursor)) temp
+    let lam = Lam True vNeeds l1
+    return lam
 addCursorsToExpr env ty expr ts = return . error . show $ pretty expr
 
 -- The function expects the same arguments as addCursorsToExpr, plus the
@@ -228,7 +242,7 @@ addCursorsToExpr env ty expr ts = return . error . show $ pretty expr
 addCursorsToAp :: TypeEnvironment -> Type -> Expr -> [Type] -> Expr -> TransformerHelper (Maybe (Expr, Type))
 addCursorsToAp env ty e@(Con x@(ConId _)) ts cursor =
   do
-    let ctorType = typeOfCoreExpression env $ Con x
+    let ctorType = typeOfCoreExpression env e
     let ctorResT = functionResult $ ctorType
     let exprRes  = (ApType (Prim $ PrimWriteCtor x) $ typeList []) `Ap` cursor
     return $ Just (exprRes, ctorResT)
@@ -335,7 +349,8 @@ toHasCursor (TCon t)    = TCursor $ thc' t
     thc' t@(TConDataType id) = TCursorHas $ typeList [TCon t]
 
 hasPackedOutput :: Type -> Maybe [Type]
-hasPackedOutput (TVar _)   = trace ("TVar in `hasPackedOutput`. Assuming non-packed, but need to verify whether this is correct!") $ Nothing
+-- TVar in `hasPackedOutput`. Assuming non-packed, but need to verify whether this is correct!
+hasPackedOutput (TVar _)   = Nothing
 hasPackedOutput (TAp _ t2) = hasPackedOutput t2
 hasPackedOutput (TForall _ k t) = hasPackedOutput t -- TODO: Should we do anything with the kind?
 hasPackedOutput (TStrict t) = map TStrict <$> hasPackedOutput t
