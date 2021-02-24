@@ -275,17 +275,21 @@ intType       = TCon $ typeConFromString "Int"
 -- The reason this function has been moved here, is so that Iridium can reach it too!
 typeOfPrimFunArity :: TypeEnvironment -> PrimFun -> (Int, Type)
 typeOfPrimFunArity _ PrimFinish = (,) 2 $
+  -- forall a .
   TForall (Quantor Nothing) KStar $
+  -- Needs($[], a) -> Needs(a $: $[], a) -> a
   typeFunction
     [ TStrict $ TCursor (TCursorNeeds (TCon TConNil) $ TVar 0)
     , TStrict $ TCursor (TCursorNeeds (typeList [TVar 0]) $ TVar 0)
     ]
-    (TVar 0) -- TODO: Return Has cursor
-typeOfPrimFunArity _ PrimRead   = undefined
+    (TVar 0)
+typeOfPrimFunArity _ PrimRead   = undefined -- No longer used?
 typeOfPrimFunArity _ PrimWrite  = (,) 2 $
+  -- forall a b c .
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
+  -- Needs(c $: a, b) -> c -> Needs(a, b)
   typeFunction
     [ TStrict $ TCursor (TCursorNeeds (TypeCons (TVar 0) $ TVar 2) $ TVar 1)
     , TStrict $ TVar 0
@@ -293,11 +297,13 @@ typeOfPrimFunArity _ PrimWrite  = (,) 2 $
     (TCursor (TCursorNeeds (TVar 2) $ TVar 1))
 typeOfPrimFunArity env (PrimWriteCtor c) = generateWriteCtor $ typeOfCoreExpression env $ Con c
 typeOfPrimFunArity _ PrimWriteLength = (,) 2 $
+  -- forall a b c .
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
   TForall (Quantor Nothing) KStar $
+  -- Needs(a, b) -> Needs(WriteLength $: c, b) -> Needs(c, b)
   typeFunction
-    [ TStrict $ TCursor (TCursorNeeds (TVar 2) $ TVar 1) -- The cursor BEFORE writing the new element. Could be of more precise type :thinking: TODO FIXME
+    [ TStrict $ TCursor (TCursorNeeds (TVar 2) $ TVar 1) -- The cursor BEFORE writing anything OTHER than the constructor. Could be of more precise type :thinking: TODO FIXME
     , TStrict $ TCursor (TCursorNeeds (TypeCons (TCon TConWriteLength) (TVar 0)) $ TVar 1) -- The cursor AFTER writing the new element
     ]
     (TCursor (TCursorNeeds (TVar 0) $ TVar 1))

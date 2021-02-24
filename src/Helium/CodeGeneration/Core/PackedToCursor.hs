@@ -197,15 +197,14 @@ addCursorsToExpr env ty e@(Ap _ _) ts =
     x <- addCursorsToAp env ty e ts $ Var iNeeds
     case x of
       Nothing -> return e
-      Just (expr, ctorType) -> do
+      Just (expr, _, ctorType, newCursorId, _, _) -> do
         -- TODO: Maybe it's a bit late to check whether we need to change the
         -- type after we change the expression...
         let vNeeds = Variable iNeeds $ toPackedIfIn ts $ ctorType
-        i1 <- thId
+        -- The resulting expression is Expr -> Expr
         let cFin = ApType (Prim PrimFinish) ctorType
-        let temp = (cFin `Ap` Var i1) `Ap` Var iNeeds
-        let t1 = typeNormalizeHead env $ typeOfCoreExpression env expr
-        let l1 = Let (NonRec (Bind (Variable i1 t1) expr)) temp
+        let temp = (cFin `Ap` Var newCursorId) `Ap` Var iNeeds
+        let l1 = expr temp
         let lam = Lam True vNeeds l1
         return lam
   where
@@ -218,52 +217,58 @@ addCursorsToExpr env ty e@(Con c@(ConId x)) ts =
     -- This pattern always matches, since we know `e` is a `Con (ConId _)`
     -- We need an irrefutable pattern just so that the compiler doesn't
     -- complain about any MonadFail stuff
-    ~(Just (cursor, ctorType)) <- addCursorsToAp env ty e ts $ Var iNeeds
+    ~(Just (cursor, _, ctorType, newCursorId, _, _)) <- addCursorsToAp env ty e ts $ Var iNeeds
     let vNeeds = Variable iNeeds $ toNeedsCursor ctorType
     i1 <- thId
     let cFin = ApType (Prim PrimFinish) ctorType
-    let temp = (cFin `Ap` Var i1) `Ap` Var iNeeds
-    let t1 = typeNormalizeHead env $ typeOfCoreExpression env cursor
-    let l1 = Let (NonRec (Bind (Variable i1 t1) cursor)) temp
+    let temp = (cFin `Ap` Var newCursorId) `Ap` Var iNeeds
+    let l1 = cursor temp
     let lam = Lam True vNeeds l1
     return lam
 addCursorsToExpr env ty expr ts = return . error . show $ pretty expr
 
 -- The function expects the same arguments as addCursorsToExpr, plus the
--- cursor. We need this cursor to keep track of the current expression to form
--- said cursor.
+-- cursor, and one identifier. We need this cursor to keep track of the current
+-- expression to form said cursor.
+--
 -- It returns Nothing when the application is not on a constructor; in this
 -- case, nothing is supposed to change in the original expression either. If
 -- the function returns Just, it returns a tuple of the current cursor building
 -- expression (i.e. it adds the current constructor application to the cursor
 -- argument, and returns that), and the resulting type of the cursor. The
 -- latter information is required by the intended call site of this function,
--- `addCursorsToExpr`.
-addCursorsToAp :: TypeEnvironment -> Type -> Expr -> [Type] -> Expr -> TransformerHelper (Maybe (Expr, Type))
+-- `addCursorsToExpr`. The third value returned by this function, is the cursor
+-- right after writing the constructor. This is used internally, in order to
+-- make sure we can write the proper length values.
+addCursorsToAp :: TypeEnvironment -> Type -> Expr -> [Type] -> Expr -> TransformerHelper (Maybe (Expr -> Expr, Type, Type, Id, Type, Id))
 addCursorsToAp env ty e@(Con x@(ConId _)) ts cursor =
   do
-    let ctorType = typeOfCoreExpression env e
-    let ctorResT = functionResult $ ctorType
-    let exprRes  = (ApType (Prim $ PrimWriteCtor x) $ typeList []) `Ap` cursor
-    return $ Just (exprRes, ctorResT)
+    origCursorId <- thId
+    let ctorType    = typeOfCoreExpression env e
+    let ctorResT    = functionResult $ ctorType
+    let exprRes     = (ApType (Prim $ PrimWriteCtor x) $ typeList []) `Ap` cursor
+    let exprResT    = typeNormalizeHead env $ typeOfCoreExpression env exprRes
+    let exprLet     = Let (NonRec $ Bind (Variable origCursorId exprResT) exprRes)
+    return $ Just (exprLet, exprResT, ctorResT, origCursorId, exprResT, origCursorId)
 addCursorsToAp env ty e@(Ap fn arg) ts cursor =
   do
     x <- addCursorsToAp env ty fn ts cursor
     case x of
       Nothing -> return Nothing
       -- The current cursor expression, and the resulting type of the cursor. The resulting type `t` is often used.
-      Just (cursor', t) -> do
-        cursorId <- thId
-        let cursorVar = Variable cursorId $ typeNormalizeHead env $ typeOfCoreExpression env cursor'
-        let cursorType = typeOfCoreExpression env cursor'
-        let TCursor (TCursorNeeds cursorList _) = cursorType
+      Just (prevExpr, t, ctorResT, prevCursorId', origCursorT, origCursorId') -> do
+        newCursorId <- thId
+        let TCursor (TCursorNeeds cursorList _) = t
+        let TCursor (TCursorNeeds originalList _) = origCursorT
         let TypeCons firstArg firstList@(TypeCons (TCon TConWriteLength) restList) = cursorList
-        let write = ((Prim PrimWrite `ApType` firstList) `ApType` t) `ApType` firstArg
-        let writeLength = (((Prim PrimWriteLength `ApType` cursorList) `ApType` t) `ApType` restList)
-        let writtenCursor = (write `Ap` Var cursorId) `Ap` arg
-        let lengthWrittenCursor = (writeLength `Ap` Var cursorId) `Ap` writtenCursor
-        let resExpr = Let (NonRec $ Bind cursorVar cursor') lengthWrittenCursor
-        return $ trace (show . pretty $ t) $ Just (resExpr, t)
+        let write = ((Prim PrimWrite `ApType` firstList) `ApType` ctorResT) `ApType` firstArg
+        let writeLength = ((Prim PrimWriteLength `ApType` originalList) `ApType` ctorResT) `ApType` restList
+        let writtenCursor = (write `Ap` Var prevCursorId') `Ap` arg
+        let lengthWrittenCursor = (writeLength `Ap` Var origCursorId') `Ap` writtenCursor
+        let newCursorT = typeNormalizeHead env $ typeOfCoreExpression env lengthWrittenCursor
+        let newCursorVar = Variable newCursorId newCursorT
+        let resExpr = prevExpr . Let (NonRec $ Bind newCursorVar lengthWrittenCursor)
+        return $ Just (resExpr, newCursorT, ctorResT, newCursorId, origCursorT, origCursorId')
 addCursorsToAp _ _ _ _ cursor = return Nothing -- Not a constructor application, not a cursor.
 
 toCursorInDecls :: NameSupply -> [CoreDecl] -> [CoreDecl]
