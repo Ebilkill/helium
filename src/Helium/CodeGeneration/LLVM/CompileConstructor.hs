@@ -42,6 +42,7 @@ dataTypeType env (Iridium.Declaration dataName _ _ _ _) layouts = case pointerLa
 constructorType :: Env -> ConstructorLayout -> Type
 constructorType env (LayoutInline tag) = envValueType env
 constructorType env (LayoutPointer struct) = structTypeNoAlias env struct
+constructorType env (LayoutPacked tag) = cursorStructType
 
 compileExtractFields :: Env -> NameSupply -> Operand -> Struct -> [Maybe Id] -> [Named Instruction]
 compileExtractFields env supply reference struct vars
@@ -54,7 +55,7 @@ compileExtractField env reference struct supply (field, Just name, index) = extr
 compileExtractField _ _ _ _ (_, Nothing, _) = []
 
 compileExtractCursorFields :: Env -> NameSupply -> Operand -> Struct -> [Maybe Id] -> [Named Instruction]
--- TODO hardcoded for a single field of type i64!
+-- TODO hardcoded for fields of type i64!
 compileExtractCursorFields env supply reference struct [] = [] -- Done all vars
 compileExtractCursorFields env supply reference struct (v : vars) =
     varInsns ++
@@ -67,6 +68,7 @@ compileExtractCursorFields env supply reference struct (v : vars) =
     (fieldPtr,      supply3)  = freshName supply2
     (resPtr,        supply4)  = freshName supply3
     (nextVar,       supply5)  = freshName supply4
+    (fieldsStart,   supply6)  = freshName supply5
     nextRef                   = LocalReference voidPointer nextVar
     -- The instructions needed to read this variable from the cursor. If the
     -- variable is Nothing, we assume we don't need to read it (since it is not
@@ -75,9 +77,13 @@ compileExtractCursorFields env supply reference struct (v : vars) =
       Nothing   -> []
       Just var  ->
         let resName = toName var
+              -- Get the pointer to the start of the field
         in  [ fieldIndexPtr := BitCast reference (pointer $ IntegerType 64) []
             , fieldIndex    := Load False (LocalReference (pointer $ IntegerType 64) fieldIndexPtr) Nothing 0 []
-            , fieldPtr      := GetElementPtr False reference [LocalReference (IntegerType 64) fieldIndex] []
+            -- skip over the rest of the lengths and go to the correct field from there.
+            , fieldsStart   := getElementPtr reference [length vars * 8]
+            , fieldPtr      := GetElementPtr False (LocalReference voidPointer fieldsStart) [LocalReference (IntegerType 64) fieldIndex] []
+              -- Get the value of the field
             , resPtr        := BitCast (LocalReference voidPointer fieldPtr) (pointer $ IntegerType 64) []
             , resName       := Load False (LocalReference (pointer $ IntegerType 64) resPtr) Nothing 0 []
             ]

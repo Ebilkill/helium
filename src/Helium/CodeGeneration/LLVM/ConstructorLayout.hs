@@ -18,6 +18,7 @@ module Helium.CodeGeneration.LLVM.ConstructorLayout(constructorLayout, Construct
 import Data.List(mapAccumL)
 import Lvm.Common.Id(Id, stringFromId)
 import qualified Lvm.Core.Type as Core
+import qualified Helium.CodeGeneration.Core.TypeEnvironment as Core (isPackedType)
 import Helium.CodeGeneration.LLVM.Utils
 import Helium.CodeGeneration.LLVM.Target
 import Helium.CodeGeneration.LLVM.Struct
@@ -31,9 +32,13 @@ data ConstructorLayout
   | LayoutPointer
     { layoutStruct :: Struct
     }
+  | LayoutPacked
+    { layoutTagId :: Int
+    }
 
 constructorLayout :: Id -> Target -> Iridium.DataType -> Int -> Iridium.DataTypeConstructor -> ConstructorLayout
 constructorLayout name target (Iridium.DataType constructors) index (Iridium.DataTypeConstructor conId tp)
+  | Core.isPackedType typeReturn = LayoutPacked index
   | fields == [] = LayoutInline index
   | otherwise = LayoutPointer struct
   where

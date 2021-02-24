@@ -28,9 +28,10 @@ import qualified Helium.CodeGeneration.LLVM.Builtins as Builtins
 import Lvm.Common.Id(Id, NameSupply, splitNameSupply, splitNameSupplies, mapWithSupply, freshId, idFromString)
 import Lvm.Common.IdMap(findMap)
 import qualified Lvm.Core.Type as Core
+import qualified Lvm.Core.Expr as Core
 import Lvm.Core.Expr (PrimFun(..))
 
-import Helium.CodeGeneration.Core.TypeEnvironment (typeOfPrimFun, typeOfPrimFunArity, isPackedType)
+import Helium.CodeGeneration.Core.TypeEnvironment (typeOfPrimFun, typeOfPrimFunArity, isPackedType, typeOfCoreExpression)
 
 import qualified Helium.CodeGeneration.Iridium.Data as Iridium
 import qualified Helium.CodeGeneration.Iridium.Type as Iridium
@@ -304,7 +305,7 @@ compileExpression env supply expr@(Iridium.CallPrimFun PrimNewCursor args) name 
     (namePtr, supply') = freshName supply
     (nameArray, _) = freshName supply'
 
-compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restList, Right cursor]) name =
+compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c@(Core.ConId conId)) [Left restList, Right cursor]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
   --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
@@ -329,7 +330,7 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restLi
     , arguments =
       [ (LocalReference cursorStructType nameIntermediate, [])
       -- The 1 at the end of this ConstantOperand is the amount of sizes to reserve. Make sure to base this on the amount you need! TODO FIXME
-      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 1, [])
+      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ ctorArgC, [])
       ]
     , functionAttributes = []
     , metadata = []
@@ -340,7 +341,11 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c) [Left restLi
     (nameArray, supply'') = freshName supply'
     (nameIntermediate, _) = freshName supply''
     vectorType = IntegerType 8
-    vector = Int 8 $ fromIntegral 0
+    vector = Int 8 $ fromIntegral $ layoutTagId $ findMap conId $ envConstructors env
+    ctorArgC = functionArgCount $ typeOfCoreExpression (envTypeEnv env) $ Core.Con c
+    functionArgCount :: Core.Type -> Int
+    functionArgCount (Core.TypeFun _ b) = 1 + functionArgCount b
+    functionArgCount _                  = 0
 
 compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left resType, Left writeType, Right cursor, Right val]) name =
   -- TODO do something with the writeType. I think this should generally be a
@@ -524,15 +529,15 @@ compileCaseConstructorCursor env supply var alts = (instructions, (Do switch))
     instructions =
       [ nameTagPtr := getElementPtr (toOperand env var) [0]
       , nameTag    := Load False (LocalReference voidPointer nameTagPtr) Nothing 0 []
-      , nameTag64  := ZExt (LocalReference (IntegerType 8) nameTag) (IntegerType 64) []
+      --, nameTag64  := ZExt (LocalReference (IntegerType 8) nameTag) (IntegerType 64) []
       ]
 
     altToDestination :: CaseAlt -> (Constant, Name)
-    altToDestination (CaseAlt (Iridium.DataTypeConstructor conId _) (LayoutPointer struct) to)
-      = (Int (fromIntegral $ targetWordSize $ envTarget env) (fromIntegral $ tagValue struct), toName to)
+    altToDestination (CaseAlt (Iridium.DataTypeConstructor conId _) (LayoutPacked tagId) to)
+      = (Int 8 $ fromIntegral tagId, toName to)
 
     switch :: Terminator
-    switch = Switch (LocalReference (envValueType env) nameTag64) (toName defaultBranch) (map altToDestination alts) []
+    switch = Switch (LocalReference (IntegerType 8) nameTag) (toName defaultBranch) (map altToDestination alts) []
 
 caseExtractMostFrequentBranch :: [CaseAlt] -> (Iridium.BlockName, [CaseAlt])
 caseExtractMostFrequentBranch alts = (defaultBranch, alts')
