@@ -96,6 +96,10 @@ analyseApplication env (Ap expr (Var arg)) arity = Analysis strict' $ drop 1 arg
 analyseApplication env (ApType expr _) arity = analyseApplication env expr arity
 analyseApplication env (Var name) arity = case lookupMap name $ envFunctionArguments env of
   Just args
+    -- Call to a lifted function returning a packed value
+    -- Even if it's not to a lifted function, I _think_ this should generally be okay?
+    | isPackedType (typeReturnType (envTypeEnv env) $ typeOfCoreExpression (envTypeEnv env) (Var name))
+      -> Analysis emptySet $ replicate (length args) True
     -- Saturated call
     | arity >= length args -> Analysis emptySet args
     -- Unsaturated call. We cannot derive any strictness information on the applied arguments,

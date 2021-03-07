@@ -317,11 +317,20 @@ typeOfPrimFunArity _ PrimNewCursor = (,) 0 $
   TForall (Quantor Nothing) KStar $
   TCursor $ TCursorNeeds (typeList [TVar 0]) $ TVar 0
 
+-- Takes the type of the constructor, and returns the arity and the type of the
+-- resulting PrimWriteCtor call.
+generateWriteCtor :: Type -> (Int, Type)
 generateWriteCtor (TypeFun a b) =
     let (arity, fun) = generateWriteCtor b
     in  (arity, growResultCursor a fun)
   where
+    -- The second argument is a function, taking the cursor `Needs(PACKED_T $:
+    -- $[], PACKED_T)` and returning the needs cursor that takes the arguments
+    -- of the constructor (interleaved with the WriteLengths).
+    -- The first argument is one of those arguments of the constructor, before
+    -- that cursor is complete. That's why we're "growing" it here.
     growResultCursor = go' 0
+
     go' :: Int -> Type -> Type -> Type
     go' n a (TForall q k t) = TForall q k $ go' (n + 1) a t
     go' n a (TypeFun cIn cOut) = case a of
@@ -335,6 +344,10 @@ generateWriteCtor (TypeFun a b) =
     addToNeeds x (TCursor (TCursorNeeds ins out)) =
       TCursor $ flip TCursorNeeds out $ typePrependList [x, TCon TConWriteLength] ins
 
+-- The `TVar 0` in here is the rest of the list after writing the constructor.
+-- This is invariably the list `WriteLength $: $[]`, but we let it be a type
+-- var just in case we need the flexibility.
+-- I'm pretty sure this is not ever going to be needed, but not entirely sure.
 generateWriteCtor t = (,) 1 $
     TForall (Quantor Nothing) KStar $
     typeFunction [fullNeeds (TVar 0)] $ emptyNeeds (TVar 0)

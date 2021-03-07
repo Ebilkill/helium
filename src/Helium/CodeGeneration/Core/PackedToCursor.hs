@@ -191,6 +191,7 @@ addCursorsToExpr env t (Let bs e) ts =
   do
     e' <- addCursorsToExpr env t e ts
     return $ Let bs e'
+-- Add cursor types to an application of a constructor (so with arguments)
 addCursorsToExpr env ty e@(Ap _ _) ts =
   do
     iNeeds <- thId
@@ -211,6 +212,7 @@ addCursorsToExpr env ty e@(Ap _ _) ts =
     toPackedIfIn ts t
       | t `elem` ts = toNeedsCursor t
       | otherwise   = t
+-- Add cursor types to a lone constructor (so without arguments)
 addCursorsToExpr env ty e@(Con c@(ConId x)) ts =
   do
     iNeeds <- thId
@@ -271,63 +273,6 @@ addCursorsToAp env ty e@(Ap fn arg) ts cursor =
         return $ Just (resExpr, newCursorT, ctorResT, newCursorId, origCursorT, origCursorId')
 addCursorsToAp _ _ _ _ cursor = return Nothing -- Not a constructor application, not a cursor.
 
-toCursorInDecls :: NameSupply -> [CoreDecl] -> [CoreDecl]
-toCursorInDecls supply = map (toCursorInDecl supply)
-
-toCursorInDecl :: NameSupply -> CoreDecl -> CoreDecl
-toCursorInDecl supply d@(DeclValue name access mod ty expr customs)
-  = DeclValue name access mod newType newExpr customs
-    -- Or should we use d rather than remaking this type?
-    where
-      cursifiedDecl       = cursorfy supply ty expr
-      (newType, newExpr)  = case cursifiedDecl of
-        Just x  -> x
-        Nothing -> (ty, expr)
-toCursorInDecl _ d = d
-
--- This needs a better name. It converts a "normal" type to a type which has
--- cursor passing style.
-cursorfy :: NameSupply -> Type -> Expr -> Maybe (Type, Expr)
-cursorfy supply ty expr =
-    let (ty', expr') = cursorfy' ty expr
-    -- Only if the type exhibits cursors does the expression change
-    in  if ty == ty' then Nothing else Just (ty', expr')
-  where
-    cursorfy' ty expr = case hasPackedOutput ty of
-      Just xs -> addNeedsCursors supply ty expr xs
-      Nothing -> (ty, expr)
-
--- Takes a type to add input cursors to, and the types for which to add cursors. Returns the transformed type.
-addNeedsCursors :: NameSupply -> Type -> Expr -> [Type] -> (Type, Expr)
-addNeedsCursors supply t e ts =
-    ( foldr typeTransform (addHasCursor t ts) cursorTypes
-    , useCursors . fst $ foldr exprTransform (e, supply) cursorTypes
-    )
-  where
-    cursorTypes = map toNeedsCursor ts
-    typeTransform next old = TypeFun next old
-    exprTransform cTy (oldExp, supp) =
-      let (i, supp') = first (flip Variable cTy) (freshId supp)
-      in (Lam False i oldExp, supp')
-
--- Changes an expression that has cursors in its type to actually use the cursors, rather than the original constructors etc.
-useCursors :: Expr -> Expr
-useCursors (Let b e)          = Let b $ useCursors e
-useCursors (Match x as)       = Match x as -- TODO: Recurse over the alts
-useCursors (Ap e1 e2)         = useCursors e1 `Ap` useCursors e2
-useCursors (ApType e1 t)      = error "Not sure what to do here. Should the type be changed as well?"
-useCursors (Lam strict var e) = Lam strict var $ useCursors e
-useCursors (Forall q k e)     = Forall q k $ useCursors e
-useCursors (Con (ConId i))    =
-  let conName = stringFromId i
-  in  if conName == "PI"
-    then Prim PrimWrite
-    else Con (ConId i)
-useCursors (Con c)            = Con c -- Probably a tuple constructor
-useCursors (Var v)            = Var v -- Variables have changed types but I don't think we need to do anything with them
-useCursors (Lit lit)          = Lit lit
-useCursors (Prim p)           = Prim p -- This is what we want to create as well...
-
 -- Transforms a packed type into a needs cursor for this type
 toNeedsCursor :: Type -> Type
 toNeedsCursor (TAp t1 t2) = typeApply t1  $ toNeedsCursor t2
@@ -338,21 +283,6 @@ toNeedsCursor (TCon t)    = TCursor $ tnc' t
     -- later. This might be inlined later, we'll see
     tnc' t@(TConDataType id) = TCursorNeeds (typeList [TCon t]) (TCon t)
 
-addHasCursor :: Type -> [Type] -> Type
-addHasCursor t ts | t `elem` ts = toHasCursor t
-addHasCursor (TAp t1 t2) ts = addHasCursor t1 ts `TAp` addHasCursor t2 ts
-addHasCursor (TStrict t) ts = TStrict $ addHasCursor t ts
--- The main base case, at least for now.
--- If this hasn't triggered the first pattern, just leave it as-is.
-addHasCursor (TCon t)    _  = TCon t
-
-toHasCursor :: Type -> Type
-toHasCursor (TAp t1 t2) = TAp t1  $ toHasCursor t2
-toHasCursor (TStrict t) = TStrict $ toHasCursor t
-toHasCursor (TCon t)    = TCursor $ thc' t
-  where
-    thc' t@(TConDataType id) = TCursorHas $ typeList [TCon t]
-
 hasPackedOutput :: Type -> Maybe [Type]
 -- TVar in `hasPackedOutput`. Assuming non-packed, but need to verify whether this is correct!
 hasPackedOutput (TVar _)   = Nothing
@@ -360,11 +290,4 @@ hasPackedOutput (TAp _ t2) = hasPackedOutput t2
 hasPackedOutput (TForall _ k t) = hasPackedOutput t -- TODO: Should we do anything with the kind?
 hasPackedOutput (TStrict t) = map TStrict <$> hasPackedOutput t
 hasPackedOutput t@(TCon tcon) = if isPackedType t then Just [t] else Nothing
-
-usesPacked :: Type -> Bool
-usesPacked (TAp t1 t2) = usesPacked t1 || usesPacked t2
-usesPacked (TForall _ k t) = usesPacked t -- TODO: Should we do anything with the kind?
-usesPacked (TStrict t) = usesPacked t
-usesPacked (TVar x) = error "Should a ty var be assumed non-packed?"
-usesPacked t@(TCon _) = isPackedType t
 

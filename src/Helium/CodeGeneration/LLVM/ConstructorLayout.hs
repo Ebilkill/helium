@@ -33,12 +33,14 @@ data ConstructorLayout
     { layoutStruct :: Struct
     }
   | LayoutPacked
+    -- using a different name for the first field here, since otherwise there's a conflict
     { layoutTagId :: Int
+    , layoutFieldTypes :: [Core.Type]
     }
 
 constructorLayout :: Id -> Target -> Iridium.DataType -> Int -> Iridium.DataTypeConstructor -> ConstructorLayout
 constructorLayout name target (Iridium.DataType constructors) index (Iridium.DataTypeConstructor conId tp)
-  | Core.isPackedType typeReturn = LayoutPacked index
+  | Core.isPackedType typeReturn = LayoutPacked index $ fieldType <$> structFields
   | fields == [] = LayoutInline index
   | otherwise = LayoutPointer struct
   where

@@ -21,7 +21,7 @@ import Helium.CodeGeneration.LLVM.CompileType
 import Helium.CodeGeneration.LLVM.CompileBind
 import Helium.CodeGeneration.LLVM.ConstructorLayout
 import Helium.CodeGeneration.LLVM.CompileConstructor(compileExtractFields, compileExtractCursorFields)
-import Helium.CodeGeneration.LLVM.Struct(tagValue, tupleStruct)
+import Helium.CodeGeneration.LLVM.Struct(tagValue, tupleStruct, Struct)
 import Helium.CodeGeneration.LLVM.CompileStruct
 import qualified Helium.CodeGeneration.LLVM.Builtins as Builtins
 
@@ -80,7 +80,7 @@ compileInstruction env supply (Iridium.Match var target _ args next)
       , cursorStartName := getElementPtr (LocalReference voidPointer cursorTagName) [1]
       ]
       -- extract the fields
-      +> compileExtractCursorFields env supply3 (LocalReference voidPointer cursorStartName) struct args
+      +> compileExtractCursorFields env supply3 (LocalReference voidPointer cursorStartName) fieldTypes args
       -- compile whatever is next
       +> compileInstruction env supply4 next
   | otherwise
@@ -93,6 +93,10 @@ compileInstruction env supply (Iridium.Match var target _ args next)
       (cursorTagName,   supply1)  = freshName supply
       (cursorStartName, supply2)  = freshName supply1
       (supply3, supply4) = splitNameSupply supply2
+      LayoutPacked _ fieldTypes = case target of
+        Iridium.MatchTargetConstructor (Iridium.DataTypeConstructor conId _) -> findMap conId (envConstructors env)
+        Iridium.MatchTargetTuple arity -> undefined -- error "Found MatchTargetTuple in a packed representation."
+
       -- otherwise; we might want to merge this somehow but the name clashes would be... strange?
       t = structType env struct
       (addressName, supply') = freshName supply
@@ -329,7 +333,8 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c@(Core.ConId c
     , function = Right $ Builtins.reserveCursorSizes
     , arguments =
       [ (LocalReference cursorStructType nameIntermediate, [])
-      -- The 1 at the end of this ConstantOperand is the amount of sizes to reserve. Make sure to base this on the amount you need! TODO FIXME
+      -- This constant operand is exactly the amount of values to write in this
+      -- cursor.
       , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ ctorArgC, [])
       ]
     , functionAttributes = []
@@ -347,47 +352,95 @@ compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c@(Core.ConId c
     functionArgCount (Core.TypeFun _ b) = 1 + functionArgCount b
     functionArgCount _                  = 0
 
-compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left resType, Left writeType, Right cursor, Right val]) name =
+compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left resType, Left writeType, Right cursor, Right val]) name
   -- TODO do something with the writeType. I think this should generally be a
-  -- type that is primitive, i.e. an Int or a Char or something similar;
-  -- assuming only PACKED_ or primitive types are allowed in PACKED_ types,
-  -- this should be true?
-  [ namePtr := Alloca vectorType Nothing 0 []
-  , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
-  -- Cast i64* to i8*, i.e. the int pointer into a void pointer
-  , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
-  -- The size starts in the first byte of the cursor
-  , toName name := Call
-    { tailCallKind = Nothing
-    , callingConvention = C
-    , returnAttributes = []
-    , function = Right $ Builtins.writeCursor
-    , arguments =
-      [ (toOperand env cursor, [])
-      -- This constant 8 is the size to write. Note that this should not be a
-      -- constant; this is now hardcoded for 64-bit integers!
-      -- TODO make sure that this takes the size of what is supposed to be
-      -- written here. This would mostly be either Ints or Chars, since other
-      -- data types are covered by other writes.
-      , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 8, [])
-      , (LocalReference voidPointer nameArray, [])
-      ]
-    , functionAttributes = []
-    , metadata = []
-    }
-  ]
-  where
-    (namePtr, supply1) = freshName supply
-    (nameArray, supply2) = freshName supply1
-    (cursorSizeIndexPtr, supply3) = freshName supply2
-    (cursorSizeIndex, supply4) = freshName supply3
-    (cursorSizeStartPtr, supply5) = freshName supply4
-    (cursorSizeStart, supply6) = freshName supply5
-    -- We need a name for some instructions that I'd rather not give a name,
-    -- but oh well.
-    (x, supply7) = freshName supply6
-    (y, _) = freshName supply7
-    vectorType = IntegerType 64
+  -- type that is primitive, i.e. an Int or a Char or something similar, or a
+  -- PACKED_ type; assuming only PACKED_ or primitive types are allowed in
+  -- PACKED_ types, this should be true?
+  -- Doesn't work yet!
+  {-
+  | isPackedType writeType =
+    -- TODO: hardcoded for a PACKED_ type containing EXACTLY 1 argument
+    -- Read the length of the value (which is a cursor)
+
+    -- TODO argC is completely wrong. How it _should_ work, is by reading the
+    -- tag of the packed data. This will then correspond to a constructor; argC
+    -- should be the argument count of that constructor.
+    -- An easier way would be to just have a version of this for each
+    -- constructor, and then using the tag to figure out which branch to take.
+    let argC      = functionArgCount writeType
+        cursorSizeInsns argC = case argC of
+          0 -> [ cursorSize := Add True True (ConstantOperand $ Int 64 $ 0) (ConstantOperand $ Int 64 $ 1) [] ]
+          x ->
+            [ valSizePtr := getElementPtr (toOperand env val) [1 + 8 * (x - 1)]
+            , val64Bit := BitCast (LocalReference voidPointer valSizePtr) (pointer $ IntegerType 64) []
+            , valSize := Load False (LocalReference (pointer $ IntegerType 64) val64Bit) Nothing 0 []
+            -- TODO: The 9 we add should be 8 * arg count + 1, but arg count is assumed to be 1 for now.
+            , cursorSize := Add True True (LocalReference (IntegerType 64) valSize) (ConstantOperand $ Int 64 $ fromIntegral $ 1 + 8 * x) []
+            ]
+        -- makes a switch statement leading to each of the branches generated above
+        switchInsns = undefined
+        -- Gets the type of each constructor of the given type.
+        constructorsFor t = undefined
+        -- merge all the instructions for each constructor
+        allCursorSizeInsns = map (cursorSizeInsns . functionArgCount) $ constructorsFor writeType
+    in cursorSizeInsns ++
+    [ undefined -- A phi-instruction merging all previous `cursorSize`s into the actual `cursorSize`.
+
+    -- Write the cursor
+    , toName name := Call
+      { tailCallKind = Nothing
+      , callingConvention = C
+      , returnAttributes = []
+      , function = Right $ Builtins.writeCursor
+      , arguments =
+        [ (toOperand env cursor, [])
+        , (LocalReference (IntegerType (fromIntegral $ targetWordSize $ envTarget env)) cursorSize, [])
+        , (toOperand env val, [])
+        ]
+      , functionAttributes = []
+      , metadata = []
+      }
+    ]
+  -}
+  | otherwise =
+    [ namePtr := Alloca vectorType Nothing 0 []
+    , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
+    -- Cast i64* to i8*, i.e. the int pointer into a void pointer
+    , nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
+    -- The size starts in the first byte of the cursor
+    , toName name := Call
+      { tailCallKind = Nothing
+      , callingConvention = C
+      , returnAttributes = []
+      , function = Right $ Builtins.writeCursor
+      , arguments =
+        [ (toOperand env cursor, [])
+        -- This constant 8 is the size to write. Note that this should not be a
+        -- constant; this is now hardcoded for 64-bit integers!
+        -- TODO make sure that this takes the size of what is supposed to be
+        -- written here. This would mostly be either Ints or Chars, since other
+        -- data types are covered by other writes.
+        , (ConstantOperand $ Int (fromIntegral $ targetWordSize $ envTarget env) $ fromIntegral $ 8, [])
+        , (LocalReference voidPointer nameArray, [])
+        ]
+      , functionAttributes = []
+      , metadata = []
+      }
+    ]
+    where
+      (namePtr, supply1) = freshName supply
+      (nameArray, supply2) = freshName supply1
+      (val64Bit, supply3) = freshName supply2
+      (valSize, supply4) = freshName supply3
+      (valValuePtr, supply5) = freshName supply4
+      (cursorSizeStart, supply6) = freshName supply5
+      (valSizePtr, supply7) = freshName supply6
+      (cursorSize, supply8) = freshName supply7
+      vectorType = IntegerType 64
+      functionArgCount :: Core.Type -> Int
+      functionArgCount (Core.TypeFun _ b) = 1 + functionArgCount b
+      functionArgCount _                  = 0
 
 -- TODO make sure that an end-pointer exists?
 compileExpression env supply (Iridium.CallPrimFun PrimToEnd [Left resType, Right cursor]) name =
@@ -401,15 +454,14 @@ compileExpression env supply (Iridium.CallPrimFun PrimToEnd [Left resType, Right
     vectorType = IntegerType 32
 
 compileExpression env supply (Iridium.CallPrimFun PrimFinish [Left restList, Right cursorStart, Right cursorEnd]) name =
-  [ namePtr := Alloca vectorType Nothing 0 []
-  , toName name := Call
+  [ toName name := Call
     { tailCallKind = Nothing
     , callingConvention = C
     , returnAttributes = []
     , function = Right $ Builtins.finishCursor
     , arguments =
       [ (toOperand env cursorStart, [])
-      , (toOperand env cursorEnd,   [])
+      -- , (toOperand env cursorEnd,   [])
       ]
     , functionAttributes = []
     , metadata = []
@@ -533,7 +585,7 @@ compileCaseConstructorCursor env supply var alts = (instructions, (Do switch))
       ]
 
     altToDestination :: CaseAlt -> (Constant, Name)
-    altToDestination (CaseAlt (Iridium.DataTypeConstructor conId _) (LayoutPacked tagId) to)
+    altToDestination (CaseAlt (Iridium.DataTypeConstructor conId _) (LayoutPacked tagId _) to)
       = (Int 8 $ fromIntegral tagId, toName to)
 
     switch :: Terminator
