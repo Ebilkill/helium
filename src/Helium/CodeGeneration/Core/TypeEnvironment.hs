@@ -349,11 +349,12 @@ generateWriteCtor (TypeFun a b) =
 -- var just in case we need the flexibility.
 -- I'm pretty sure this is not ever going to be needed, but not entirely sure.
 generateWriteCtor t = (,) 1 $
-    TForall (Quantor Nothing) KStar $
-    typeFunction [fullNeeds (TVar 0)] $ emptyNeeds (TVar 0)
+    TForall (Quantor $ Just "restList") KStar $
+    TForall (Quantor $ Just "resType")  KStar $
+    typeFunction [fullNeeds (TVar 1)] $ emptyNeeds (TVar 1)
   where
-    fullNeeds restList = TStrict $ TCursor $ TCursorNeeds (TypeCons t restList) t
-    emptyNeeds restList = TCursor $ TCursorNeeds restList t
+    fullNeeds restList = TStrict $ TCursor $ TCursorNeeds (TypeCons t restList) (TVar 0)
+    emptyNeeds restList = TCursor $ TCursorNeeds restList (TVar 0)
 
 typeOfPrimFun :: TypeEnvironment -> PrimFun -> Type
 typeOfPrimFun env = snd . typeOfPrimFunArity env

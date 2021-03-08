@@ -112,7 +112,7 @@ compileExtractCursorFields env supply reference fieldTypes xs =
           Nothing   -> []
           Just var  ->
             let resName = toName var
-                insnsForVar = 
+                insnsForVar =
                   [ -- Get the value of the field
                     resPtr  := BitCast (LocalReference voidPointer fieldPtr) (pointer $ IntegerType 64) []
                   , resName := Load False (LocalReference (pointer $ IntegerType 64) resPtr) Nothing 0 []

@@ -118,8 +118,11 @@ idMatchCase = idFromString "match_case"
 idMatchDefault = idFromString "match_default"
 
 toMethod :: NameSupply -> TypeEnv -> Id -> Core.Expr -> Method
-toMethod supply env name expr = Method tp args returnType [AnnotateTrampoline] (Block entryName entry) blocks
+toMethod supply env name expr = Method tp args returnType annotations (Block entryName entry) blocks
   where
+    annotations
+      | "TreeTest.toPacked" `isPrefixOf` stringFromId name = []
+      | otherwise = [AnnotateTrampoline]
     (entryName, supply') = freshIdFromId idEntry supply
     (arity, tp) = fromMaybe (error "toMethod: could not find function signature") $ resolveFunction env name
     createArgument (Left quantor) _ = Left quantor

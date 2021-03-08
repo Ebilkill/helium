@@ -309,7 +309,7 @@ compileExpression env supply expr@(Iridium.CallPrimFun PrimNewCursor args) name 
     (namePtr, supply') = freshName supply
     (nameArray, _) = freshName supply'
 
-compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c@(Core.ConId conId)) [Left restList, Right cursor]) name =
+compileExpression env supply (Iridium.CallPrimFun (PrimWriteCtor c@(Core.ConId conId)) [Left restList, Left resType, Right cursor]) name =
   [ namePtr := Alloca vectorType Nothing 0 []
   , Do $ Store False (LocalReference (pointer vectorType) namePtr) (ConstantOperand vector) Nothing 0 []
   --, nameArray := BitCast (LocalReference (pointer vectorType) namePtr) voidPointer []
@@ -357,8 +357,6 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
   -- type that is primitive, i.e. an Int or a Char or something similar, or a
   -- PACKED_ type; assuming only PACKED_ or primitive types are allowed in
   -- PACKED_ types, this should be true?
-  -- Doesn't work yet!
-  {-
   | isPackedType writeType =
     -- TODO: hardcoded for a PACKED_ type containing EXACTLY 1 argument
     -- Read the length of the value (which is a cursor)
@@ -384,7 +382,7 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
         constructorsFor t = undefined
         -- merge all the instructions for each constructor
         allCursorSizeInsns = map (cursorSizeInsns . functionArgCount) $ constructorsFor writeType
-    in cursorSizeInsns ++
+    in cursorSizeInsns 0 ++
     [ undefined -- A phi-instruction merging all previous `cursorSize`s into the actual `cursorSize`.
 
     -- Write the cursor
@@ -402,7 +400,6 @@ compileExpression env supply (Iridium.CallPrimFun PrimWrite [Left restList, Left
       , metadata = []
       }
     ]
-  -}
   | otherwise =
     [ namePtr := Alloca vectorType Nothing 0 []
     , Do $ Store False (LocalReference (pointer vectorType) namePtr) (toOperand env val) Nothing 0 []
