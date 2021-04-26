@@ -52,9 +52,21 @@ type Check a = Either TypeError a
 report :: Message -> Check a
 report = Left . TypeError []
 
+-- This assertion might be slightly inaccurate now. However, it is hard to fix
+-- this problem with the primitive functions.
+--
+-- The primitive functions need to have strict arguments at all times, or we
+-- make thunks rather than calling them directly, which defeats the purpose of
+-- using the cursors in the first place. Allowing this with non-strict argument
+-- types (before the strictness analysis) requires this assertion to have the
+-- `typeNotStrict` calls. However, this also makes it so that the types might
+-- be wrong _after_ the strictness analysis. This has never been a problem in
+-- the tests so far, but the tests were not _very_ extensive.
+--
+-- This needs to be looked into some more.
 assert :: TypeEnvironment -> QuantorNames -> Type -> Type -> Check ()
 assert env quantors t1 t2
-  | typeEqual env t1 t2 = Right ()
+  | typeEqual env (typeNotStrict t1) (typeNotStrict t2) = Right ()
   | otherwise = report $ MessageNotEqual quantors t1 t2
 
 (@@) :: Check a -> String -> Check a

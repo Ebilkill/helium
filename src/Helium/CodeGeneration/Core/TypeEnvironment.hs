@@ -10,6 +10,7 @@
 
 module Helium.CodeGeneration.Core.TypeEnvironment where
 
+import GHC.Stack (HasCallStack)
 import Data.List (isPrefixOf)
 import Data.Maybe
 
@@ -115,14 +116,28 @@ typeReturnType env (TypeFun t1 t2) = typeReturnType env $ typeNormalizeHead env 
 typeReturnType _ x@(TVar _) = TCon TConReturnType `TAp` x
 typeReturnType _ x = x
 
-typeOfId :: TypeEnvironment -> Id -> Type
+-- This function is separate, since we do not want to descend into Foralls when
+-- asking for the return type _all_ the time. However, descending into Foralls
+-- does not matter, as long as the function type looks like the following:
+-- forall . forall . ... forall . a -> b -> ... -> Needs(y, z)
+-- In this case, we know the function _always_ returns a cursor, and as such,
+-- we can descend into whatever foralls we like.
+typeReturnsCursor :: TypeEnvironment -> Type -> Bool
+typeReturnsCursor env t = typeIsCursor $ trc' t
+  where
+    trc' (TypeFun t1 t2) = trc' $ typeNormalizeHead env t2
+    trc' (TForall _ _ t) = trc' $ typeNormalizeHead env t
+    trc' x@(TVar _) = TCon TConReturnType `TAp` x
+    trc' x = x
+
+typeOfId :: HasCallStack => TypeEnvironment -> Id -> Type
 typeOfId env name = case lookupMap name $ typeEnvGlobalValues env of
   Just tp -> tp
   Nothing -> case lookupMap name $ typeEnvLocalValues env of
     Just tp -> tp
     Nothing -> internalError "Core.TypeEnvironment" "typeOfId" $ "variable " ++ show name ++ " not found in type environment"
 
-typeOfCoreExpression :: TypeEnvironment -> Expr -> Type
+typeOfCoreExpression :: HasCallStack => TypeEnvironment -> Expr -> Type
 
 -- Find type of the expression in the Let
 typeOfCoreExpression env (Let binds expr)

@@ -83,7 +83,7 @@ exit:
 define external ccc %Cursor @helium_write_cursor(%Cursor  %cursor, i64 %size, i8* %data) {
 0:
   ; memdump the old cursor, do the actual writing
-  call ccc void @helium_memdump_cursor(%Cursor %cursor)
+  ; call ccc void @helium_memdump_cursor(%Cursor %cursor)
   ;%currIndexPtr = getelementptr %Cursor, %Cursor %cursor, i64 0
   ;%currIndex = load i64, i64* %currIndexPtr
   %currIndex = extractvalue %Cursor %cursor, 0
@@ -98,7 +98,7 @@ define external ccc %Cursor @helium_write_cursor(%Cursor  %cursor, i64 %size, i8
   %resCursor = insertvalue %Cursor %newCursor, i64 %newIndex, 0
 
   ; return the new cursor
-  call ccc void @helium_memdump_cursor(%Cursor %resCursor)
+  ; call ccc void @helium_memdump_cursor(%Cursor %resCursor)
   ret %Cursor %resCursor
 }
 
@@ -134,7 +134,7 @@ firstLoopBody:
   ; new_size_indices->next_element = buffer
   %newIndexNextPtr = getelementptr %SizeIndices, %SizeIndices* %newIndexPtr, i64 0, i32 1
   store %SizeIndices* %flBuffer, %SizeIndices** %newIndexNextPtr
-  call ccc void @helium_memdump_cursor(%Cursor %flCursor)
+  ; call ccc void @helium_memdump_cursor(%Cursor %flCursor)
 
   ; helium_write_cursor(cursor, 8, &0)
   %newCursor = call ccc %Cursor @helium_write_cursor(%Cursor %flCursor, i64 8, i8* %sizePlaceholder)
@@ -210,7 +210,7 @@ entry:
 }
 
 define external ccc i8* @helium_finish_cursor(%Cursor %cursor) {
-  call ccc void @helium_memdump_cursor(%Cursor %cursor)
+  ; call ccc void @helium_memdump_cursor(%Cursor %cursor)
 
   %retval = extractvalue %Cursor %cursor, 1
   ret i8* %retval
